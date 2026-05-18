@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+import os
 from typing import Any
 
 import httpx
@@ -45,7 +46,10 @@ class CompanyService:
     def __init__(self, timeout_seconds: float = 10.0) -> None:
         self.timeout = httpx.Timeout(timeout_seconds)
         self.headers = {
-            "User-Agent": "AlphaLens milestone1 contact@example.com",
+            "User-Agent": os.getenv(
+                "SEC_USER_AGENT",
+                "AlphaLens research prototype contact@example.com",
+            ),
             "Accept": "application/json",
         }
 

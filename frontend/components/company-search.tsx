@@ -1,9 +1,18 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { AlertCircle, ArrowUpRight, Building2, Loader2, Search } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowUpRight,
+  Building2,
+  Database,
+  ExternalLink,
+  FileText,
+  Loader2,
+  Search,
+} from "lucide-react";
 
-import { CompanyOverview, fetchCompany } from "@/lib/api";
+import { CompanyOverview, FilingSummary, fetchCompany, ingestLatestFiling } from "@/lib/api";
 
 function formatCurrency(value: number | null, currency: string | null) {
   if (value === null) return "Unavailable";
@@ -56,8 +65,11 @@ function MetricCard({ label, value, tone = "default" }: MetricCardProps) {
 export function CompanySearch() {
   const [ticker, setTicker] = useState("NVDA");
   const [company, setCompany] = useState<CompanyOverview | null>(null);
+  const [filing, setFiling] = useState<FilingSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [filingError, setFilingError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isIngesting, setIsIngesting] = useState(false);
 
   const priceTone = useMemo(() => {
     const change = company?.price.change ?? 0;
@@ -74,12 +86,32 @@ export function CompanySearch() {
     try {
       const result = await fetchCompany(ticker);
       setCompany(result);
+      setFiling(null);
+      setFilingError(null);
       setTicker(result.ticker);
     } catch (caught) {
       setCompany(null);
+      setFiling(null);
       setError(caught instanceof Error ? caught.message : "Something went wrong.");
     } finally {
       setIsLoading(false);
+    }
+  }
+
+  async function onIngestLatestFiling() {
+    if (!company) return;
+
+    setFilingError(null);
+    setIsIngesting(true);
+
+    try {
+      const result = await ingestLatestFiling(company.ticker);
+      setFiling(result);
+    } catch (caught) {
+      setFiling(null);
+      setFilingError(caught instanceof Error ? caught.message : "Unable to ingest latest filing.");
+    } finally {
+      setIsIngesting(false);
     }
   }
 
@@ -164,6 +196,89 @@ export function CompanySearch() {
                   value={formatCurrency(company.price.previous_close, company.price.currency)}
                 />
               </div>
+
+              <div className="rounded-lg border border-ink/10 bg-white p-5 shadow-panel">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2 text-sm font-semibold uppercase text-brass">
+                      <FileText className="h-4 w-4" />
+                      SEC filing ingestion
+                    </div>
+                    <h2 className="mt-2 text-xl font-semibold text-ink">Latest 10-K / 10-Q</h2>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-moss">
+                      Pulls the latest annual or quarterly filing from SEC EDGAR, stores the raw
+                      source locally, and extracts major sections for the next Q&A milestone.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={onIngestLatestFiling}
+                    disabled={isIngesting}
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-signal px-5 text-sm font-semibold text-white transition hover:bg-brass disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {isIngesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+                    Ingest latest filing
+                  </button>
+                </div>
+
+                {filingError ? (
+                  <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+                    <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                    <p className="text-sm font-medium">{filingError}</p>
+                  </div>
+                ) : null}
+
+                {filing ? (
+                  <div className="mt-5 space-y-5">
+                    <div className="grid gap-4 sm:grid-cols-3">
+                      <MetricCard label="Filing type" value={filing.form} />
+                      <MetricCard label="Filing date" value={filing.filing_date} />
+                      <MetricCard label="Sections found" value={String(filing.sections.length)} />
+                    </div>
+
+                    <div className="rounded-lg bg-paper p-4">
+                      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div>
+                          <div className="text-xs font-semibold uppercase tracking-wide text-moss">
+                            Source document
+                          </div>
+                          <div className="mt-1 break-all text-sm font-medium text-ink">
+                            {filing.primary_document}
+                          </div>
+                        </div>
+                        <a
+                          href={filing.source_url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-2 text-sm font-semibold text-signal hover:text-brass"
+                        >
+                          Open SEC source
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                      {filing.sections.map((section) => (
+                        <article
+                          key={section.item + section.name}
+                          className="rounded-lg border border-ink/10 bg-white p-4"
+                        >
+                          <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                            <h3 className="text-base font-semibold text-ink">
+                              {section.item}: {section.name}
+                            </h3>
+                            <span className="text-xs font-medium uppercase tracking-wide text-moss">
+                              {section.word_count.toLocaleString()} words
+                            </span>
+                          </div>
+                          <p className="mt-3 text-sm leading-6 text-moss">{section.text}</p>
+                        </article>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
             </div>
           ) : (
             <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-dashed border-ink/20 bg-white p-8 text-center">
@@ -195,6 +310,18 @@ export function CompanySearch() {
                 <dd className="text-right font-medium text-ink">Pending source</dd>
               </div>
               <div className="flex justify-between gap-4">
+                <dt className="text-moss">Latest filing</dt>
+                <dd className="text-right font-medium text-ink">
+                  {filing ? filing.form + " filed " + filing.filing_date : "Not ingested"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-4">
+                <dt className="text-moss">Section extraction</dt>
+                <dd className="text-right font-medium text-ink">
+                  {filing ? filing.sections.length + " sections" : "Pending"}
+                </dd>
+              </div>
+              <div className="flex justify-between gap-4">
                 <dt className="text-moss">Last quote time</dt>
                 <dd className="text-right font-medium text-ink">
                   {company ? formatDate(company.price.regular_market_time) : "Unavailable"}
@@ -206,9 +333,9 @@ export function CompanySearch() {
           <div className="rounded-lg border border-ink/10 bg-white p-5 shadow-panel">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-moss">Next MVP steps</h2>
             <ol className="mt-4 space-y-3 text-sm text-moss">
-              <li>1. Pull latest 10-K/10-Q from SEC.</li>
-              <li>2. Chunk and embed filing sections.</li>
-              <li>3. Ask questions over filing evidence.</li>
+              <li>1. Chunk filing sections for retrieval.</li>
+              <li>2. Generate embeddings and vector search.</li>
+              <li>3. Ask questions over cited filing evidence.</li>
             </ol>
           </div>
         </aside>
