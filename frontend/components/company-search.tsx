@@ -55,9 +55,23 @@ function MetricCard({ label, value, tone = "default" }: MetricCardProps) {
         : "text-ink";
 
   return (
-    <div className="rounded-lg border border-ink/10 bg-white p-4 shadow-panel">
-      <div className="text-xs font-semibold uppercase tracking-wide text-moss">{label}</div>
-      <div className={"mt-2 text-2xl font-semibold " + toneClass}>{value}</div>
+    <div className="bg-bone p-4 shadow-inset">
+      <div className="eyebrow text-moss">{label}</div>
+      <div className={"mt-3 min-h-8 text-2xl font-black tracking-normal " + toneClass}>{value}</div>
+    </div>
+  );
+}
+
+type StatusRowProps = {
+  label: string;
+  value: string;
+};
+
+function StatusRow({ label, value }: StatusRowProps) {
+  return (
+    <div className="flex items-start justify-between gap-4 border-b border-line/80 py-3 last:border-0">
+      <dt className="text-moss">{label}</dt>
+      <dd className="max-w-[55%] text-right font-semibold text-current">{value}</dd>
     </div>
   );
 }
@@ -117,66 +131,80 @@ export function CompanySearch() {
 
   return (
     <section className="w-full">
-      <form
-        onSubmit={onSubmit}
-        className="flex w-full flex-col gap-3 border-b border-ink/10 bg-white px-4 py-4 sm:flex-row sm:items-center sm:px-6 lg:px-10"
-      >
-        <label className="sr-only" htmlFor="ticker">
-          Ticker
-        </label>
-        <div className="relative w-full max-w-md">
-          <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-moss" />
-          <input
-            id="ticker"
-            value={ticker}
-            onChange={(event) => setTicker(event.target.value)}
-            placeholder="Search ticker"
-            className="h-11 w-full rounded-lg border border-ink/15 bg-paper pl-10 pr-3 text-base font-semibold uppercase outline-none transition focus:border-signal focus:bg-white focus:ring-2 focus:ring-signal/15"
-          />
+      <div className="bg-ink px-4 py-6 text-bone sm:px-6 lg:px-10">
+        <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[0.95fr_1.05fr] lg:items-end">
+          <div>
+            <div className="eyebrow text-mint">Source-grounded finance research</div>
+            <h2 className="mt-3 max-w-3xl text-4xl font-black leading-[1.02] tracking-normal sm:text-5xl">
+              Turn SEC filings into cited investor workflows.
+            </h2>
+          </div>
+          <form
+            onSubmit={onSubmit}
+            className="surface-dark grid gap-3 rounded-lg p-3 sm:grid-cols-[1fr_auto] sm:p-4"
+          >
+            <label className="sr-only" htmlFor="ticker">
+              Ticker
+            </label>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-moss" />
+              <input
+                id="ticker"
+                value={ticker}
+                onChange={(event) => setTicker(event.target.value)}
+                placeholder="Search ticker"
+                className="h-12 w-full rounded-lg border border-white/10 bg-white pl-10 pr-3 text-base font-black uppercase text-ink outline-none transition placeholder:text-moss focus:border-mint focus:ring-2 focus:ring-mint/30"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="icon-button bg-mint text-ink hover:bg-bone disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUpRight className="h-4 w-4" />}
+              Search
+            </button>
+          </form>
         </div>
-        <button
-          type="submit"
-          disabled={isLoading}
-          className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-ink px-5 text-sm font-semibold text-white transition hover:bg-moss disabled:cursor-not-allowed disabled:opacity-70"
-        >
-          {isLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <ArrowUpRight className="h-4 w-4" />}
-          Search
-        </button>
-      </form>
+      </div>
 
-      <div className="mx-auto grid max-w-7xl gap-6 px-4 py-6 sm:px-6 lg:grid-cols-[1.2fr_0.8fr] lg:px-10">
+      <div className="mx-auto grid max-w-7xl gap-5 px-4 py-6 sm:px-6 lg:grid-cols-[1.25fr_0.75fr] lg:px-10">
         <div className="min-h-[420px]">
           {error ? (
-            <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+            <div className="mb-5 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
               <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-              <p className="text-sm font-medium">{error}</p>
+              <p className="text-sm font-semibold">{error}</p>
             </div>
           ) : null}
 
           {company ? (
             <div className="space-y-5">
-              <div className="rounded-lg border border-ink/10 bg-white p-5 shadow-panel">
-                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+              <div className="surface rounded-lg p-5">
+                <div className="flex flex-col gap-5 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <div className="flex items-center gap-2 text-sm font-semibold uppercase text-brass">
-                      <Building2 className="h-4 w-4" />
-                      {company.exchange ?? "Exchange unavailable"}
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-bone">
+                        <Building2 className="h-4 w-4" />
+                      </span>
+                      <span className="eyebrow text-brass">{company.exchange ?? "Exchange unavailable"}</span>
                     </div>
-                    <h1 className="mt-2 text-3xl font-semibold text-ink">{company.name}</h1>
-                    <p className="mt-2 text-sm text-moss">
-                      {company.ticker} · CIK {company.cik}
+                    <h1 className="mt-5 max-w-3xl text-4xl font-black leading-tight tracking-normal text-ink">
+                      {company.name}
+                    </h1>
+                    <p className="mt-2 text-sm font-semibold text-moss">
+                      {company.ticker} / CIK {company.cik}
                     </p>
                   </div>
-                  <div className="rounded-lg bg-paper px-4 py-3 text-left sm:text-right">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-moss">Market state</div>
-                    <div className="mt-1 text-lg font-semibold text-ink">
+                  <div className="rounded-lg border border-line bg-paper px-4 py-3 text-left shadow-inset sm:text-right">
+                    <div className="eyebrow text-moss">Market state</div>
+                    <div className="mt-1 text-lg font-black text-ink">
                       {company.price.market_state ?? "Unavailable"}
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <div className="metric-grid sm:grid-cols-2 xl:grid-cols-4">
                 <MetricCard
                   label="Latest price"
                   value={formatCurrency(company.price.latest_price, company.price.currency)}
@@ -197,14 +225,16 @@ export function CompanySearch() {
                 />
               </div>
 
-              <div className="rounded-lg border border-ink/10 bg-white p-5 shadow-panel">
+              <div className="surface rounded-lg p-5">
                 <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
                   <div>
-                    <div className="flex items-center gap-2 text-sm font-semibold uppercase text-brass">
-                      <FileText className="h-4 w-4" />
-                      SEC filing ingestion
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-bone">
+                        <FileText className="h-4 w-4" />
+                      </span>
+                      <span className="eyebrow text-brass">SEC filing ingestion</span>
                     </div>
-                    <h2 className="mt-2 text-xl font-semibold text-ink">Latest 10-K / 10-Q</h2>
+                    <h2 className="mt-4 text-2xl font-black tracking-normal text-ink">Latest 10-K / 10-Q</h2>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-moss">
                       Pulls the latest annual or quarterly filing from SEC EDGAR, stores the raw
                       source locally, and extracts major sections for the next Q&A milestone.
@@ -214,7 +244,7 @@ export function CompanySearch() {
                     type="button"
                     onClick={onIngestLatestFiling}
                     disabled={isIngesting}
-                    className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-signal px-5 text-sm font-semibold text-white transition hover:bg-brass disabled:cursor-not-allowed disabled:opacity-70"
+                    className="icon-button bg-ink text-bone hover:bg-charcoal disabled:cursor-not-allowed disabled:opacity-70"
                   >
                     {isIngesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
                     Ingest latest filing
@@ -224,25 +254,23 @@ export function CompanySearch() {
                 {filingError ? (
                   <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
                     <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-                    <p className="text-sm font-medium">{filingError}</p>
+                    <p className="text-sm font-semibold">{filingError}</p>
                   </div>
                 ) : null}
 
                 {filing ? (
                   <div className="mt-5 space-y-5">
-                    <div className="grid gap-4 sm:grid-cols-3">
+                    <div className="metric-grid sm:grid-cols-3">
                       <MetricCard label="Filing type" value={filing.form} />
                       <MetricCard label="Filing date" value={filing.filing_date} />
                       <MetricCard label="Sections found" value={String(filing.sections.length)} />
                     </div>
 
-                    <div className="rounded-lg bg-paper p-4">
+                    <div className="rounded-lg border border-line bg-paper p-4 shadow-inset">
                       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                         <div>
-                          <div className="text-xs font-semibold uppercase tracking-wide text-moss">
-                            Source document
-                          </div>
-                          <div className="mt-1 break-all text-sm font-medium text-ink">
+                          <div className="eyebrow text-moss">Source document</div>
+                          <div className="mt-1 break-all text-sm font-semibold text-ink">
                             {filing.primary_document}
                           </div>
                         </div>
@@ -250,7 +278,7 @@ export function CompanySearch() {
                           href={filing.source_url}
                           target="_blank"
                           rel="noreferrer"
-                          className="inline-flex items-center gap-2 text-sm font-semibold text-signal hover:text-brass"
+                          className="inline-flex items-center gap-2 text-sm font-black text-signal hover:text-brass"
                         >
                           Open SEC source
                           <ExternalLink className="h-4 w-4" />
@@ -262,13 +290,13 @@ export function CompanySearch() {
                       {filing.sections.map((section) => (
                         <article
                           key={section.item + section.name}
-                          className="rounded-lg border border-ink/10 bg-white p-4"
+                          className="rounded-lg border border-line bg-bone p-4 shadow-inset"
                         >
                           <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-                            <h3 className="text-base font-semibold text-ink">
+                            <h3 className="text-base font-black text-ink">
                               {section.item}: {section.name}
                             </h3>
-                            <span className="text-xs font-medium uppercase tracking-wide text-moss">
+                            <span className="eyebrow text-moss">
                               {section.word_count.toLocaleString()} words
                             </span>
                           </div>
@@ -281,10 +309,12 @@ export function CompanySearch() {
               </div>
             </div>
           ) : (
-            <div className="flex min-h-[420px] items-center justify-center rounded-lg border border-dashed border-ink/20 bg-white p-8 text-center">
+            <div className="surface flex min-h-[420px] items-center justify-center rounded-lg border-dashed p-8 text-center">
               <div>
                 <Search className="mx-auto h-10 w-10 text-brass" />
-                <h1 className="mt-4 text-2xl font-semibold text-ink">Search a public company ticker</h1>
+                <h1 className="mt-4 text-3xl font-black tracking-normal text-ink">
+                  Search a public company ticker
+                </h1>
                 <p className="mt-2 max-w-md text-sm leading-6 text-moss">
                   Start with NVDA, JPM, COIN, AAPL, or another SEC-listed ticker.
                 </p>
@@ -294,48 +324,33 @@ export function CompanySearch() {
         </div>
 
         <aside className="space-y-4">
-          <div className="rounded-lg border border-ink/10 bg-white p-5 shadow-panel">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-moss">Data coverage</h2>
-            <dl className="mt-4 space-y-3 text-sm">
-              <div className="flex justify-between gap-4">
-                <dt className="text-moss">Company directory</dt>
-                <dd className="text-right font-medium text-ink">SEC EDGAR</dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-moss">Quote snapshot</dt>
-                <dd className="text-right font-medium text-ink">Yahoo Finance</dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-moss">Market cap</dt>
-                <dd className="text-right font-medium text-ink">Pending source</dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-moss">Latest filing</dt>
-                <dd className="text-right font-medium text-ink">
-                  {filing ? filing.form + " filed " + filing.filing_date : "Not ingested"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-moss">Section extraction</dt>
-                <dd className="text-right font-medium text-ink">
-                  {filing ? filing.sections.length + " sections" : "Pending"}
-                </dd>
-              </div>
-              <div className="flex justify-between gap-4">
-                <dt className="text-moss">Last quote time</dt>
-                <dd className="text-right font-medium text-ink">
-                  {company ? formatDate(company.price.regular_market_time) : "Unavailable"}
-                </dd>
-              </div>
+          <div className="surface-dark rounded-lg p-5">
+            <h2 className="eyebrow text-mint">Data coverage</h2>
+            <dl className="mt-4 text-sm">
+              <StatusRow label="Company directory" value="SEC EDGAR" />
+              <StatusRow label="Quote snapshot" value="Yahoo Finance" />
+              <StatusRow label="Market cap" value="Pending source" />
+              <StatusRow
+                label="Latest filing"
+                value={filing ? filing.form + " filed " + filing.filing_date : "Not ingested"}
+              />
+              <StatusRow
+                label="Section extraction"
+                value={filing ? filing.sections.length + " sections" : "Pending"}
+              />
+              <StatusRow
+                label="Last quote time"
+                value={company ? formatDate(company.price.regular_market_time) : "Unavailable"}
+              />
             </dl>
           </div>
 
-          <div className="rounded-lg border border-ink/10 bg-white p-5 shadow-panel">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-moss">Next MVP steps</h2>
-            <ol className="mt-4 space-y-3 text-sm text-moss">
-              <li>1. Chunk filing sections for retrieval.</li>
-              <li>2. Generate embeddings and vector search.</li>
-              <li>3. Ask questions over cited filing evidence.</li>
+          <div className="surface rounded-lg p-5">
+            <h2 className="eyebrow text-moss">Next MVP steps</h2>
+            <ol className="mt-4 space-y-3 text-sm font-medium text-moss">
+              <li className="rounded-md border border-line bg-bone px-3 py-2">1. Chunk filing sections for retrieval.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">2. Generate embeddings and vector search.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">3. Ask questions over cited filing evidence.</li>
             </ol>
           </div>
         </aside>

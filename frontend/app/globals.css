@@ -4,6 +4,8 @@
 
 :root {
   color-scheme: light;
+  --background: #f3f0e8;
+  --foreground: #101413;
 }
 
 * {
@@ -12,13 +14,82 @@
 
 body {
   margin: 0;
-  background: #f7f7f2;
-  color: #17211f;
+  background:
+    linear-gradient(180deg, rgba(251, 250, 246, 0.92), rgba(243, 240, 232, 0.98)),
+    #f3f0e8;
+  color: var(--foreground);
   font-family:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  text-rendering: optimizeLegibility;
 }
 
 button,
 input {
   font: inherit;
+}
+
+::selection {
+  background: #9ff0c2;
+  color: #101413;
+}
+
+@layer components {
+  .app-shell {
+    min-height: 100vh;
+    background:
+      linear-gradient(90deg, rgba(16, 20, 19, 0.045) 1px, transparent 1px),
+      linear-gradient(180deg, rgba(16, 20, 19, 0.045) 1px, transparent 1px),
+      #f3f0e8;
+    background-size: 56px 56px;
+  }
+
+  .surface {
+    border: 1px solid theme("colors.line");
+    background: rgba(251, 250, 246, 0.92);
+    box-shadow: theme("boxShadow.panel"), theme("boxShadow.inset");
+  }
+
+  .surface-dark {
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: #101413;
+    color: #fbfaf6;
+    box-shadow: 0 24px 70px rgba(16, 20, 19, 0.24);
+  }
+
+  .eyebrow {
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .icon-button {
+    display: inline-flex;
+    height: 2.75rem;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    border-radius: 0.5rem;
+    padding-inline: 1rem;
+    font-size: 0.875rem;
+    font-weight: 750;
+    transition:
+      background-color 150ms ease,
+      border-color 150ms ease,
+      color 150ms ease,
+      transform 150ms ease;
+  }
+
+  .icon-button:hover {
+    transform: translateY(-1px);
+  }
+
+  .metric-grid {
+    display: grid;
+    gap: 1px;
+    overflow: hidden;
+    border: 1px solid theme("colors.line");
+    border-radius: 0.5rem;
+    background: theme("colors.line");
+  }
 }
