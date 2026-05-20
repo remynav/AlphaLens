@@ -518,11 +518,11 @@ export function CompanySearch() {
                         {brief.red_flags.length > 0 ? (
                           <div className="mt-4 rounded-lg border border-red-300/30 bg-red-950/20 p-3">
                             <div className="eyebrow text-red-100">Red flags</div>
-                            <ul className="mt-3 space-y-2 text-sm leading-6 text-bone/80">
+                            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-bone/80">
                               {brief.red_flags.map((point) => (
                                 <li key={point.headline + point.citation_index}>
-                                  <span className="font-black text-bone">{point.headline}:</span>{" "}
-                                  {point.detail}
+                                  <span className="font-black text-bone">{point.headline}.</span>{" "}
+                                  <span>{point.detail}</span>
                                 </li>
                               ))}
                             </ul>
@@ -537,45 +537,12 @@ export function CompanySearch() {
                                   }
                                   className="mt-3 inline-flex text-xs font-black uppercase tracking-normal text-red-100 hover:text-bone"
                                 >
-                                  View Risk Factors in Filing
+                                  View Risk Factors
                                 </a>
                               );
                             })()}
                           </div>
                         ) : null}
-
-                        <div className="mt-4 rounded-lg border border-white/10 bg-white/5 p-3">
-                          <div className="eyebrow text-mint">Source claims</div>
-                          <div className="mt-3 grid gap-2 md:grid-cols-2">
-                          {brief.key_points.map((point) => (
-                            <article
-                              key={point.headline + point.citation_index}
-                              className="rounded-md border border-white/10 px-3 py-2"
-                            >
-                              <div className="text-xs font-black uppercase tracking-normal text-mint">
-                                {point.category} / Citation {point.citation_index}
-                              </div>
-                              <div className="mt-1 text-sm font-black text-bone">{point.headline}</div>
-                              <a
-                                href={sourceHref(
-                                  brief.citations[point.citation_index - 1]?.item ?? "",
-                                  brief.citations[point.citation_index - 1]?.section_name ?? "",
-                                )}
-                                onClick={(event) =>
-                                  openSourceSection(
-                                    event,
-                                    brief.citations[point.citation_index - 1]?.item ?? "",
-                                    brief.citations[point.citation_index - 1]?.section_name ?? "",
-                                  )
-                                }
-                                className="mt-2 inline-flex text-xs font-black uppercase tracking-normal text-mint hover:text-bone"
-                              >
-                                See source section
-                              </a>
-                            </article>
-                          ))}
-                          </div>
-                        </div>
 
                         <div className="mt-4 grid gap-3 lg:grid-cols-2">
                           <div className="rounded-lg border border-white/10 bg-white/5 p-3">

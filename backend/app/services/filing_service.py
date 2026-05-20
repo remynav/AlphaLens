@@ -1091,12 +1091,37 @@ class FilingService:
         )
 
     def _red_flags(self, key_points: list[FilingBriefPoint]) -> list[FilingBriefPoint]:
-        flagged = [
-            point
-            for point in key_points
-            if self._is_specific_red_flag(point)
-        ]
-        return flagged[:3]
+        flagged: list[FilingBriefPoint] = []
+        for point in key_points:
+            if not self._is_specific_red_flag(point):
+                continue
+            flagged.append(
+                FilingBriefPoint(
+                    category=point.category,
+                    headline=self._red_flag_headline(point),
+                    detail=point.detail,
+                    citation_index=point.citation_index,
+                )
+            )
+            if len(flagged) >= 4:
+                break
+        return flagged
+
+    def _red_flag_headline(self, point: FilingBriefPoint) -> str:
+        text = (point.headline + " " + point.detail).lower()
+        if any(term in text for term in ["export control", "export", "tariff", "sanction"]):
+            return "Regulatory or trade restriction"
+        if any(term in text for term in ["cybersecurity", "cyber", "breach", "data security"]):
+            return "Security or data exposure"
+        if any(term in text for term in ["supply", "constraint", "delay", "availability"]):
+            return "Supply or delivery constraint"
+        if any(term in text for term in ["litigation", "lawsuit", "legal proceeding"]):
+            return "Legal exposure"
+        if any(term in text for term in ["material weakness", "internal control", "disclosure control"]):
+            return "Controls weakness"
+        if any(term in text for term in ["geopolitical", "regulatory", "regulation"]):
+            return "Regulatory or geopolitical exposure"
+        return "Specific risk factor"
 
     def _kpi_signals(self, citations: list[FilingCitation]) -> list[FilingKpiSignal]:
         signals: list[FilingKpiSignal] = []
