@@ -19,12 +19,14 @@ import {
 import {
   CompanyOverview,
   FilingComparison,
+  FilingInvestorBrief,
   FilingQuestionHistoryEntry,
   FilingQuestionAnswer,
   FilingSummary,
   askFilingQuestion,
   compareFilings,
   fetchCompany,
+  fetchInvestorBrief,
   fetchLatestFiling,
   fetchFilingQuestionHistory,
   ingestLatestFiling,
@@ -101,16 +103,19 @@ export function CompanySearch() {
   const [ticker, setTicker] = useState("NVDA");
   const [company, setCompany] = useState<CompanyOverview | null>(null);
   const [filing, setFiling] = useState<FilingSummary | null>(null);
+  const [brief, setBrief] = useState<FilingInvestorBrief | null>(null);
   const [comparison, setComparison] = useState<FilingComparison | null>(null);
   const [question, setQuestion] = useState("What are the main risks?");
   const [answer, setAnswer] = useState<FilingQuestionAnswer | null>(null);
   const [questionHistory, setQuestionHistory] = useState<FilingQuestionHistoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filingError, setFilingError] = useState<string | null>(null);
+  const [briefError, setBriefError] = useState<string | null>(null);
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [questionError, setQuestionError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
+  const [isBriefing, setIsBriefing] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
 
@@ -130,16 +135,19 @@ export function CompanySearch() {
       const result = await fetchCompany(ticker);
       setCompany(result);
       setFiling(null);
+      setBrief(null);
       setComparison(null);
       setAnswer(null);
       setQuestionHistory([]);
       setFilingError(null);
+      setBriefError(null);
       setComparisonError(null);
       setQuestionError(null);
       setTicker(result.ticker);
     } catch (caught) {
       setCompany(null);
       setFiling(null);
+      setBrief(null);
       setComparison(null);
       setAnswer(null);
       setQuestionHistory([]);
@@ -158,18 +166,37 @@ export function CompanySearch() {
     try {
       const result = await ingestLatestFiling(company.ticker);
       setFiling(result);
+      setBrief(await fetchInvestorBrief(company.ticker));
       setComparison(null);
       setAnswer(null);
+      setBriefError(null);
       setComparisonError(null);
       setQuestionHistory(await fetchFilingQuestionHistory(company.ticker));
     } catch (caught) {
       setFiling(null);
+      setBrief(null);
       setComparison(null);
       setAnswer(null);
       setQuestionHistory([]);
       setFilingError(caught instanceof Error ? caught.message : "Unable to ingest latest filing.");
     } finally {
       setIsIngesting(false);
+    }
+  }
+
+  async function onGenerateBrief() {
+    if (!company || !filing) return;
+
+    setBriefError(null);
+    setIsBriefing(true);
+
+    try {
+      setBrief(await fetchInvestorBrief(company.ticker));
+    } catch (caught) {
+      setBrief(null);
+      setBriefError(caught instanceof Error ? caught.message : "Unable to generate investor brief.");
+    } finally {
+      setIsBriefing(false);
     }
   }
 
@@ -344,6 +371,15 @@ export function CompanySearch() {
                       )}
                       Compare periods
                     </button>
+                    <button
+                      type="button"
+                      onClick={onGenerateBrief}
+                      disabled={!filing || isBriefing}
+                      className="icon-button bg-paper text-ink hover:bg-bone disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {isBriefing ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                      Investor brief
+                    </button>
                   </div>
                 </div>
 
@@ -358,6 +394,13 @@ export function CompanySearch() {
                   <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
                     <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
                     <p className="text-sm font-semibold">{comparisonError}</p>
+                  </div>
+                ) : null}
+
+                {briefError ? (
+                  <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+                    <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                    <p className="text-sm font-semibold">{briefError}</p>
                   </div>
                 ) : null}
 
@@ -388,6 +431,55 @@ export function CompanySearch() {
                         </a>
                       </div>
                     </div>
+
+                    {brief ? (
+                      <div className="rounded-lg border border-line bg-ink p-4 text-bone">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <div className="eyebrow text-mint">Investor brief</div>
+                            <h3 className="mt-1 text-xl font-black">Latest filing readout</h3>
+                            <p className="mt-2 max-w-3xl text-sm leading-6 text-bone/80">{brief.brief}</p>
+                          </div>
+                          <div className="text-xs font-black uppercase tracking-normal text-mint">
+                            {brief.synthesis_method}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                          {brief.key_points.map((point) => (
+                            <article
+                              key={point.headline + point.citation_index}
+                              className="rounded-lg border border-white/10 bg-white/5 p-3"
+                            >
+                              <div className="text-xs font-black uppercase tracking-normal text-mint">
+                                {point.category} / Citation {point.citation_index}
+                              </div>
+                              <h4 className="mt-2 text-base font-black">{point.headline}</h4>
+                              <p className="mt-2 text-sm leading-6 text-bone/80">{point.detail}</p>
+                            </article>
+                          ))}
+                        </div>
+
+                        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                          <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                            <div className="eyebrow text-mint">What to watch</div>
+                            <ul className="mt-3 space-y-2 text-sm leading-6 text-bone/80">
+                              {brief.watch_items.map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                          <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                            <div className="eyebrow text-mint">Evidence limits</div>
+                            <ul className="mt-3 space-y-2 text-sm leading-6 text-bone/80">
+                              {brief.limitations.map((item) => (
+                                <li key={item}>{item}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
 
                     {comparison ? (
                       <div className="rounded-lg border border-line bg-paper p-4 shadow-inset">
@@ -540,7 +632,29 @@ export function CompanySearch() {
                                 {answer.retrieval_method} / {answer.synthesis_method}
                               </div>
                             </div>
-                            <p className="mt-2 text-sm leading-6 text-ink">{answer.answer}</p>
+                            <p className="mt-2 text-base font-black leading-6 text-ink">
+                              {answer.direct_answer || answer.answer}
+                            </p>
+                            {answer.evidence_points.length > 0 ? (
+                              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                {answer.evidence_points.map((point) => (
+                                  <article
+                                    key={point.label + point.citation_index}
+                                    className="rounded-md border border-line bg-paper p-3"
+                                  >
+                                    <div className="text-xs font-black uppercase tracking-normal text-brass">
+                                      {point.label} / Citation {point.citation_index}
+                                    </div>
+                                    <p className="mt-2 text-sm leading-6 text-moss">{point.text}</p>
+                                  </article>
+                                ))}
+                              </div>
+                            ) : null}
+                            {answer.limitations.length > 0 ? (
+                              <p className="mt-3 text-xs font-semibold leading-5 text-moss">
+                                {answer.limitations.join(" ")}
+                              </p>
+                            ) : null}
                           </div>
                           <div className="space-y-3">
                             {answer.citations.map((citation) => (

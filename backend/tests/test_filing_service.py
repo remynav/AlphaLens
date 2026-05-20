@@ -147,9 +147,10 @@ def test_answer_question_uses_latest_ingested_filing(tmp_path):
     assert answer.ticker == "NVDA"
     assert answer.accession_number == "0001045810-26-000123"
     assert "Revenue increased" in answer.answer
+    assert "Revenue increased" in answer.direct_answer or answer.evidence_points
     assert answer.citations[0].item == "Item 7"
     assert answer.retrieval_method == "local-hash-embedding"
-    assert answer.synthesis_method == "extractive-cited-synthesis"
+    assert answer.synthesis_method == "structured-cited-synthesis"
 
 
 def test_answer_question_persists_question_history(tmp_path):
@@ -257,7 +258,7 @@ def test_llm_synthesis_is_gated_and_falls_back_by_default(monkeypatch):
         lambda question, citations: "LLM answer [1]",
     )
 
-    answer, method = service._synthesize_answer(
+    answer, evidence_points, limitations, method = service._synthesize_answer(
         "What are the main risks?",
         [
             FilingCitation(
@@ -270,8 +271,10 @@ def test_llm_synthesis_is_gated_and_falls_back_by_default(monkeypatch):
         ],
     )
 
-    assert "Export controls may delay shipments" in answer
-    assert method == "extractive-cited-synthesis"
+    assert "risk" in answer.lower()
+    assert evidence_points[0].text == "Export controls may delay shipments."
+    assert limitations
+    assert method == "structured-cited-synthesis"
 
 
 def test_llm_synthesis_uses_provider_when_enabled(monkeypatch):
@@ -284,7 +287,7 @@ def test_llm_synthesis_uses_provider_when_enabled(monkeypatch):
         lambda question, citations: "LLM answer [1]",
     )
 
-    answer, method = service._synthesize_answer(
+    answer, evidence_points, limitations, method = service._synthesize_answer(
         "What are the main risks?",
         [
             FilingCitation(
@@ -298,7 +301,57 @@ def test_llm_synthesis_uses_provider_when_enabled(monkeypatch):
     )
 
     assert answer == "LLM answer [1]"
+    assert evidence_points == []
+    assert limitations
     assert method == "openai-cited-synthesis"
+
+
+def test_generate_investor_brief_returns_structured_cited_points(tmp_path):
+    service = FilingService(data_dir=tmp_path)
+    summary = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example",
+        index_url="https://www.sec.gov/example-index",
+        local_path=str(tmp_path / "NVDA_000104581026000123.json"),
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text=(
+                    "Export controls and geopolitical restrictions may delay customer shipments. "
+                    "Supply constraints may affect product availability."
+                ),
+                word_count=13,
+            ),
+            FilingSection(
+                name="Management Discussion and Analysis",
+                item="Item 7",
+                text=(
+                    "Revenue increased because data center demand grew across customers. "
+                    "Operating income improved because product margins were stronger."
+                ),
+                word_count=16,
+            ),
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    service._persist(summary, "<html></html>")
+
+    brief = service.generate_investor_brief("NVDA")
+
+    assert brief.ticker == "NVDA"
+    assert brief.synthesis_method == "deterministic-investor-brief"
+    assert brief.key_points
+    assert brief.citations
+    assert any(point.category == "Risk" for point in brief.key_points)
+    assert "latest filing" in brief.brief.lower()
 
 
 def test_compare_filings_returns_section_deltas_with_citations():

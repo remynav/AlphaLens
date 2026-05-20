@@ -59,6 +59,60 @@ STOP_WORDS = {
     "with",
 }
 EMBEDDING_DIMENSIONS = 96
+INVESTOR_CATEGORIES = {
+    "Risk": {
+        "risk",
+        "adverse",
+        "uncertain",
+        "supply",
+        "constraint",
+        "delay",
+        "competition",
+        "regulation",
+        "regulatory",
+        "cybersecurity",
+        "export",
+        "control",
+        "customer",
+        "demand",
+        "litigation",
+        "geopolitical",
+    },
+    "Business Driver": {
+        "revenue",
+        "growth",
+        "demand",
+        "customer",
+        "product",
+        "service",
+        "margin",
+        "income",
+        "sales",
+        "market",
+        "segment",
+        "data",
+        "center",
+    },
+    "Liquidity": {
+        "cash",
+        "liquidity",
+        "debt",
+        "capital",
+        "credit",
+        "financing",
+        "borrow",
+        "repurchase",
+        "dividend",
+    },
+    "Controls": {
+        "control",
+        "procedure",
+        "material",
+        "weakness",
+        "disclosure",
+        "internal",
+    },
+}
 
 
 class FilingIngestionError(RuntimeError):
@@ -114,11 +168,20 @@ class FilingCitation(BaseModel):
     embedding_model: str | None = None
 
 
+class FilingAnswerPoint(BaseModel):
+    label: str
+    text: str
+    citation_index: int
+
+
 class FilingQuestionAnswer(BaseModel):
     ticker: str
     accession_number: str
     question: str
     answer: str
+    direct_answer: str
+    evidence_points: list[FilingAnswerPoint] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
     citations: list[FilingCitation]
     retrieval_method: str
     synthesis_method: str
@@ -134,6 +197,27 @@ class FilingQuestionHistoryEntry(BaseModel):
     retrieval_method: str
     synthesis_method: str
     answered_at: str
+
+
+class FilingBriefPoint(BaseModel):
+    category: str
+    headline: str
+    detail: str
+    citation_index: int
+
+
+class FilingInvestorBrief(BaseModel):
+    ticker: str
+    company_name: str
+    accession_number: str
+    filing_date: str
+    brief: str
+    key_points: list[FilingBriefPoint]
+    watch_items: list[str]
+    limitations: list[str]
+    citations: list[FilingCitation]
+    synthesis_method: str
+    generated_at: str
 
 
 class FilingComparisonCitation(BaseModel):
@@ -288,16 +372,22 @@ class FilingService:
         if not filing.chunk_embeddings:
             filing.chunk_embeddings = self._build_chunk_embeddings(filing.sections)
 
-        citations = self._retrieve_citations(filing, normalized_question)
+        citations = self._retrieve_citations(filing, self._retrieval_query(normalized_question))
         if not citations:
             answer = (
                 "I could not find enough matching evidence in the ingested filing sections to answer "
                 "that question. Try asking about business operations, risk factors, management "
                 "discussion, financial statements, or controls."
             )
+            direct_answer = answer
+            evidence_points: list[FilingAnswerPoint] = []
+            limitations = ["No sufficiently relevant filing excerpts were retrieved."]
             synthesis_method = "none-no-citations"
         else:
-            answer, synthesis_method = self._synthesize_answer(normalized_question, citations)
+            direct_answer, evidence_points, limitations, synthesis_method = self._synthesize_answer(
+                normalized_question, citations
+            )
+            answer = self._format_structured_answer(direct_answer, evidence_points, limitations)
 
         answered_at = datetime.now(UTC).isoformat()
         result = FilingQuestionAnswer(
@@ -305,6 +395,9 @@ class FilingService:
             accession_number=filing.accession_number,
             question=normalized_question,
             answer=answer,
+            direct_answer=direct_answer,
+            evidence_points=evidence_points,
+            limitations=limitations,
             citations=citations,
             retrieval_method=citations[0].retrieval_method if citations else "none",
             synthesis_method=synthesis_method,
@@ -312,6 +405,47 @@ class FilingService:
         )
         self._append_question_history(result)
         return result
+
+    def generate_investor_brief(self, ticker: str) -> FilingInvestorBrief:
+        filing = self.get_latest_ingested(ticker)
+        if filing is None:
+            raise FilingIngestionError("No ingested filing found. Ingest the latest filing first.")
+
+        if not filing.chunk_embeddings:
+            filing.chunk_embeddings = self._build_chunk_embeddings(filing.sections)
+
+        citations = self._investor_brief_citations(filing)
+        if not citations:
+            raise FilingIngestionError("No filing evidence was available to build an investor brief.")
+
+        key_points = [
+            FilingBriefPoint(
+                category=self._classify_investor_category(citation),
+                headline=self._headline_for_citation(citation),
+                detail=self._investor_detail(citation),
+                citation_index=index,
+            )
+            for index, citation in enumerate(citations, start=1)
+        ]
+        brief = self._brief_summary(filing, key_points)
+        watch_items = self._watch_items(key_points)
+
+        return FilingInvestorBrief(
+            ticker=filing.ticker,
+            company_name=filing.company_name,
+            accession_number=filing.accession_number,
+            filing_date=filing.filing_date,
+            brief=brief,
+            key_points=key_points,
+            watch_items=watch_items,
+            limitations=[
+                "Generated from the latest ingested 10-K/10-Q only.",
+                "Use the cited excerpts as the audit trail before relying on a point.",
+            ],
+            citations=citations,
+            synthesis_method="deterministic-investor-brief",
+            generated_at=datetime.now(UTC).isoformat(),
+        )
 
     def get_question_history(self, ticker: str, limit: int = 10) -> list[FilingQuestionHistoryEntry]:
         normalized = CompanyService()._normalize_ticker(ticker)
@@ -547,6 +681,10 @@ class FilingService:
                 score = (semantic_score * 0.85) + (lexical_score * 0.15)
             if score <= 0.05:
                 continue
+            if self._is_boilerplate_excerpt(chunk.excerpt):
+                score *= 0.15
+            if "risk" in query_terms and "risk" in chunk.section_name.lower():
+                score *= 1.35
 
             citation = FilingCitation(
                 section_name=chunk.section_name,
@@ -559,8 +697,22 @@ class FilingService:
             )
             scored.append((score, citation))
 
-        scored.sort(key=lambda entry: entry[0], reverse=True)
-        return [citation for _, citation in scored[:3]]
+        non_boilerplate = [
+            (score, citation)
+            for score, citation in scored
+            if not self._is_boilerplate_excerpt(citation.excerpt)
+        ]
+        ranked = non_boilerplate or scored
+        if "risk" in query_terms:
+            risk_ranked = [
+                (score, citation)
+                for score, citation in ranked
+                if "risk" in citation.section_name.lower()
+            ]
+            if risk_ranked:
+                ranked = risk_ranked
+        ranked.sort(key=lambda entry: entry[0], reverse=True)
+        return [citation for _, citation in ranked[:3]]
 
     def _build_chunk_embeddings(self, sections: list[FilingSection]) -> list[FilingChunkEmbedding]:
         chunk_embeddings: list[FilingChunkEmbedding] = []
@@ -615,6 +767,18 @@ class FilingService:
     def _search_terms(self, text: str) -> set[str]:
         tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", text.lower())
         return {self._normalize_search_term(token) for token in tokens if token not in STOP_WORDS}
+
+    def _retrieval_query(self, question: str) -> str:
+        lowered = question.lower()
+        if "risk" in lowered:
+            return (
+                question
+                + " material adverse risks export controls supply constraints competition "
+                + "regulation cybersecurity customer demand geopolitical litigation"
+            )
+        if any(term in lowered for term in ["revenue", "growth", "margin", "income"]):
+            return question + " revenue growth demand margin operating income business drivers"
+        return question
 
     def _normalize_search_term(self, term: str) -> str:
         if len(term) > 4 and term.endswith("ies"):
@@ -692,32 +856,190 @@ class FilingService:
 
     def _synthesize_answer(
         self, question: str, citations: list[FilingCitation]
-    ) -> tuple[str, str]:
+    ) -> tuple[str, list[FilingAnswerPoint], list[str], str]:
         if self.llm_synthesis_enabled:
             try:
                 generated = self._request_cited_llm_answer(question, citations)
                 if generated:
-                    return generated, "openai-cited-synthesis"
+                    return generated, [], ["Provider synthesis was not decomposed into local evidence bullets."], "openai-cited-synthesis"
             except (httpx.HTTPError, KeyError, TypeError, ValueError):
                 pass
 
-        lead = citations[0]
-        parts = [
-            "Based on the retrieved filing evidence, "
-            + lead.excerpt.rstrip(".")
-            + f" ({lead.item}: {lead.section_name})."
-        ]
-        if len(citations) > 1:
-            supporting = citations[1]
-            parts.append(
-                "A supporting excerpt also states that "
-                + supporting.excerpt.rstrip(".")
-                + f" ({supporting.item}: {supporting.section_name})."
+        evidence_points = [
+            FilingAnswerPoint(
+                label=self._classify_investor_category(citation),
+                text=self._answer_point_text(citation),
+                citation_index=index,
             )
-        parts.append(
-            "This answer is limited to the cited filing excerpts and should be treated as a starting point for review."
+            for index, citation in enumerate(citations, start=1)
+        ]
+        direct_answer = self._direct_answer(question, evidence_points)
+        limitations = [
+            "This is a filing-grounded synthesis, not a valuation opinion.",
+            "Evidence is limited to the retrieved excerpts from the latest ingested filing.",
+        ]
+        return direct_answer, evidence_points, limitations, "structured-cited-synthesis"
+
+    def _format_structured_answer(
+        self,
+        direct_answer: str,
+        evidence_points: list[FilingAnswerPoint],
+        limitations: list[str],
+    ) -> str:
+        parts = [direct_answer]
+        for point in evidence_points:
+            parts.append(f"{point.label}: {point.text} [{point.citation_index}]")
+        if limitations:
+            parts.append("Limitations: " + " ".join(limitations))
+        return " ".join(parts)
+
+    def _direct_answer(self, question: str, evidence_points: list[FilingAnswerPoint]) -> str:
+        labels = []
+        for point in evidence_points:
+            if point.label not in labels:
+                labels.append(point.label)
+        if not labels:
+            return "The retrieved filing excerpts do not support a substantive answer."
+
+        focus = ", ".join(labels[:3]).lower()
+        evidence_terms = self._evidence_focus_terms(evidence_points)
+        if "risk" in question.lower():
+            if evidence_terms:
+                return "The strongest retrieved risk evidence concerns " + evidence_terms + "."
+            return "The filing evidence points mainly to " + focus + " as the most relevant risk areas."
+        if any(term in question.lower() for term in ["change", "changed", "different"]):
+            return "The retrieved evidence highlights changes or emphasis around " + focus + "."
+        return "The filing evidence supports a focused answer around " + focus + "."
+
+    def _evidence_focus_terms(self, evidence_points: list[FilingAnswerPoint]) -> str:
+        counts: dict[str, int] = {}
+        for point in evidence_points:
+            for term in self._search_terms(point.text):
+                if term in {"risk", "factor", "company", "business", "result"}:
+                    continue
+                counts[term] = counts.get(term, 0) + 1
+        ranked = sorted(counts.items(), key=lambda entry: (entry[1], entry[0]), reverse=True)
+        terms = [self._display_search_term(term) for term, _ in ranked[:4]]
+        return ", ".join(terms)
+
+    def _answer_point_text(self, citation: FilingCitation) -> str:
+        sentence = self._best_sentence(citation.excerpt, self._category_terms(citation))
+        return self._excerpt(sentence, 260)
+
+    def _investor_brief_citations(self, filing: FilingSummary) -> list[FilingCitation]:
+        preferred: list[FilingCitation] = []
+        seen: set[tuple[str, int]] = set()
+        prompts = [
+            "material risks export controls supply constraints competition regulation customer demand",
+            "revenue growth demand margin operating income business drivers customer products services",
+            "cash liquidity debt capital financing controls procedures material weakness",
+        ]
+        for prompt in prompts:
+            for citation in self._retrieve_citations(filing, prompt):
+                key = (citation.item, citation.chunk_index)
+                if key in seen or self._is_boilerplate_excerpt(citation.excerpt):
+                    continue
+                seen.add(key)
+                preferred.append(citation)
+                if len(preferred) >= 6:
+                    return preferred
+        return preferred
+
+    def _classify_investor_category(self, citation: FilingCitation) -> str:
+        section = citation.section_name.lower()
+        if "risk" in section:
+            return "Risk"
+        if "control" in section:
+            return "Controls"
+        if "financial" in section:
+            return "Financial Disclosure"
+
+        terms = self._search_terms(citation.excerpt)
+        scores = {
+            category: len(terms & {self._normalize_search_term(term) for term in category_terms})
+            for category, category_terms in INVESTOR_CATEGORIES.items()
+        }
+        category, score = max(scores.items(), key=lambda entry: entry[1])
+        return category if score else citation.section_name
+
+    def _headline_for_citation(self, citation: FilingCitation) -> str:
+        category = self._classify_investor_category(citation)
+        terms = sorted(
+            self._search_terms(citation.excerpt)
+            & {self._normalize_search_term(term) for term in self._category_terms(citation)}
         )
-        return " ".join(parts), "extractive-cited-synthesis"
+        if terms:
+            return category + ": " + ", ".join(self._display_search_term(term) for term in terms[:3])
+        return category + " signal from " + citation.item
+
+    def _investor_detail(self, citation: FilingCitation) -> str:
+        sentence = self._best_sentence(citation.excerpt, self._category_terms(citation))
+        return self._excerpt(sentence, 300)
+
+    def _brief_summary(self, filing: FilingSummary, key_points: list[FilingBriefPoint]) -> str:
+        categories = []
+        for point in key_points:
+            if point.category not in categories:
+                categories.append(point.category)
+        if not categories:
+            return filing.company_name + " has no investor brief points from the latest filing evidence."
+        return (
+            filing.company_name
+            + "'s latest filing surfaces "
+            + ", ".join(categories[:4]).lower()
+            + " as the main evidence-backed areas to review before deeper analysis."
+        )
+
+    def _watch_items(self, key_points: list[FilingBriefPoint]) -> list[str]:
+        items: list[str] = []
+        for point in key_points:
+            if point.category == "Risk":
+                items.append("Track whether the cited risk becomes more specific or repeated in the next filing.")
+            elif point.category == "Business Driver":
+                items.append("Compare the cited business driver against revenue and margin trends.")
+            elif point.category == "Liquidity":
+                items.append("Check whether liquidity language changes alongside cash, debt, or capital returns.")
+            elif point.category == "Controls":
+                items.append("Verify whether controls language mentions material weaknesses or remediation.")
+            if len(items) >= 3:
+                break
+        return items or ["Review cited filing evidence against future filings and reported results."]
+
+    def _category_terms(self, citation: FilingCitation) -> set[str]:
+        category = self._classify_investor_category(citation)
+        terms = INVESTOR_CATEGORIES.get(category, set())
+        return {self._normalize_search_term(term) for term in terms}
+
+    def _best_sentence(self, text: str, focus_terms: set[str]) -> str:
+        sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text).strip())
+        if not sentences:
+            return text
+        ranked = sorted(
+            sentences,
+            key=lambda sentence: (
+                int(not self._is_boilerplate_excerpt(sentence)),
+                len(self._search_terms(sentence) & focus_terms),
+                len(sentence.split()),
+            ),
+            reverse=True,
+        )
+        return ranked[0]
+
+    def _is_boilerplate_excerpt(self, text: str) -> bool:
+        lowered = text.lower()
+        boilerplate_patterns = [
+            "should be read in conjunction",
+            "before deciding to purchase, hold, or sell",
+            "refer to item 1a",
+            "refer to “item 1a",
+            "risk factors” for a discussion",
+            'risk factors," for a discussion',
+            "risks related to regulatory, legal, our stock",
+            "other cautionary statements and risks described elsewhere",
+            "forward-looking statements",
+            "has not otherwise had a material effect",
+        ]
+        return any(pattern in lowered for pattern in boilerplate_patterns)
 
     def _request_cited_llm_answer(self, question: str, citations: list[FilingCitation]) -> str:
         evidence = "\n\n".join(
@@ -824,6 +1146,7 @@ class FilingService:
             "decreas": "decrease",
             "increas": "increase",
             "pric": "price",
+            "taxe": "taxes",
         }
         return display_fixes.get(term, term)
 

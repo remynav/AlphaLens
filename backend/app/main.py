@@ -61,6 +61,15 @@ async def get_latest_ingested_filing(ticker: str):
     return filing
 
 
+@app.get("/company/{ticker}/filings/latest/brief")
+async def get_latest_filing_investor_brief(ticker: str):
+    service = FilingService()
+    try:
+        return service.generate_investor_brief(ticker)
+    except FilingIngestionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @app.post("/company/{ticker}/filings/latest/questions")
 async def ask_latest_filing_question(ticker: str, request: FilingQuestionRequest):
     service = FilingService()

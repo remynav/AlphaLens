@@ -1,6 +1,6 @@
 # AlphaLens
 
-AlphaLens is a source-grounded SEC filing research assistant. The current app supports company lookup, SEC filing ingestion, section extraction, embeddings-backed retrieval, cited answer synthesis, saved Q&A history, and filing-to-filing comparison for recent 10-K/10-Q reports.
+AlphaLens is a source-grounded SEC filing research assistant. The current app supports company lookup, SEC filing ingestion, section extraction, an investor brief generated from cited filing evidence, embeddings-backed retrieval, structured cited answer synthesis, saved Q&A history, and filing-to-filing comparison for recent 10-K/10-Q reports.
 
 ## Current Milestones
 
@@ -9,15 +9,16 @@ This repo currently includes:
 - \`backend/\`: FastAPI service with \`GET /company/{ticker}\`.
 - \`POST /company/{ticker}/filings/latest\` to ingest the latest 10-K/10-Q from SEC EDGAR.
 - Local filing persistence under \`backend/data/filings/\` for raw HTML, extracted section metadata, and local chunk embeddings.
+- \`GET /company/{ticker}/filings/latest/brief\` to generate a structured investor brief with key points, watch items, limitations, and citations.
 - \`POST /company/{ticker}/filings/latest/questions\` to answer questions using vector-ranked filing excerpts and citation guardrails.
 - \`GET /company/{ticker}/filings/latest/questions\` to return saved question history for a company.
 - \`POST /company/{ticker}/filings/compare\` to ingest the two most recent 10-K/10-Q filings and compare shared sections.
 - \`GET /company/{ticker}/filings/compare\` to compare the two most recent already-ingested filings.
 - \`frontend/\`: Next.js + TypeScript + Tailwind dashboard with ticker search.
-- Filing ingestion UI that displays filing metadata, SEC source links, extracted sections, cited answers, retrieval metadata, citation scores, saved question history, and section-level period comparisons.
+- Filing ingestion UI that displays filing metadata, SEC source links, an investor brief, extracted sections, structured cited answers, retrieval metadata, citation scores, saved question history, and section-level period comparisons.
 - Free public data sources: SEC company ticker metadata, SEC submissions/archive filings, and Yahoo Finance chart quote data for prototype quotes.
 
-The API returns company identity data, CIK, exchange, current/previous price, day change, latest filing metadata, source links, extracted filing section previews, Q&A responses with citations, retrieval method metadata, synthesis method metadata, saved question history, and section comparison summaries with excerpts from both filings. Fields that are not available from the free unauthenticated sources are returned as \`null\` rather than fabricated.
+The API returns company identity data, CIK, exchange, current/previous price, day change, latest filing metadata, source links, extracted filing section previews, investor brief key points, Q&A responses with structured evidence bullets and citations, retrieval method metadata, synthesis method metadata, saved question history, and section comparison summaries with excerpts from both filings. Fields that are not available from the free unauthenticated sources are returned as \`null\` rather than fabricated.
 
 ## SEC User Agent
 
@@ -31,7 +32,7 @@ If unset, the backend uses a prototype default.
 
 ## Embeddings and Synthesis
 
-AlphaLens works without paid credentials by using deterministic local hash embeddings and extractive cited synthesis. To use provider-backed embeddings, set:
+AlphaLens works without paid credentials by using deterministic local hash embeddings and structured cited synthesis. To use provider-backed embeddings, set:
 
 ~~~bash
 export OPENAI_API_KEY="..."
@@ -48,7 +49,7 @@ export ALPHALENS_LLM_SYNTHESIS=1
 export ALPHALENS_LLM_MODEL="gpt-4.1-mini"
 ~~~
 
-When synthesis is disabled or unavailable, AlphaLens returns an extractive answer assembled only from cited filing excerpts.
+When provider synthesis is disabled or unavailable, AlphaLens returns a deterministic structured answer with a direct response, evidence bullets, limitations, and cited filing excerpts.
 
 ## Run Locally
 
@@ -77,6 +78,7 @@ Open \`http://localhost:3000\`. The frontend proxies API requests through Next.j
 ~~~bash
 curl http://localhost:8000/company/NVDA
 curl -X POST http://localhost:8000/company/NVDA/filings/latest
+curl http://localhost:8000/company/NVDA/filings/latest/brief
 curl -X POST http://localhost:8000/company/NVDA/filings/latest/questions \\
   -H "Content-Type: application/json" \\
   -d '{"question":"What are the main risks?"}'

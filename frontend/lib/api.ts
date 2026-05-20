@@ -59,10 +59,19 @@ export type FilingQuestionAnswer = {
   accession_number: string;
   question: string;
   answer: string;
+  direct_answer: string;
+  evidence_points: FilingAnswerPoint[];
+  limitations: string[];
   citations: FilingCitation[];
   retrieval_method: string;
   synthesis_method: string;
   answered_at: string;
+};
+
+export type FilingAnswerPoint = {
+  label: string;
+  text: string;
+  citation_index: number;
 };
 
 export type FilingQuestionHistoryEntry = {
@@ -74,6 +83,27 @@ export type FilingQuestionHistoryEntry = {
   retrieval_method: string;
   synthesis_method: string;
   answered_at: string;
+};
+
+export type FilingBriefPoint = {
+  category: string;
+  headline: string;
+  detail: string;
+  citation_index: number;
+};
+
+export type FilingInvestorBrief = {
+  ticker: string;
+  company_name: string;
+  accession_number: string;
+  filing_date: string;
+  brief: string;
+  key_points: FilingBriefPoint[];
+  watch_items: string[];
+  limitations: string[];
+  citations: FilingCitation[];
+  synthesis_method: string;
+  generated_at: string;
 };
 
 export type FilingComparisonCitation = {
@@ -192,6 +222,22 @@ export async function fetchFilingQuestionHistory(
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail ?? "Unable to load question history.");
+  }
+
+  return response.json();
+}
+
+export async function fetchInvestorBrief(ticker: string): Promise<FilingInvestorBrief> {
+  const response = await fetch(
+    "/api/company/" + encodeURIComponent(ticker) + "/filings/latest/brief",
+    {
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? "Unable to generate investor brief.");
   }
 
   return response.json();
