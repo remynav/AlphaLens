@@ -334,10 +334,10 @@ def test_generate_investor_brief_returns_structured_cited_points(tmp_path):
                 name="Management Discussion and Analysis",
                 item="Item 7",
                 text=(
-                    "Revenue increased because data center demand grew across customers. "
+                    "Revenue increased 30% because data center demand grew across customers. "
                     "Operating income improved because product margins were stronger."
                 ),
-                word_count=16,
+                word_count=17,
             ),
         ],
         ingested_at="2026-05-19T00:00:00+00:00",
@@ -350,8 +350,64 @@ def test_generate_investor_brief_returns_structured_cited_points(tmp_path):
     assert brief.synthesis_method == "deterministic-investor-brief"
     assert brief.key_points
     assert brief.citations
+    assert brief.thesis_cases.bull_case
+    assert brief.thesis_cases.bear_case
+    assert brief.thesis_cases.watch_for
+    assert brief.red_flags
+    assert any(signal.label == "Revenue" for signal in brief.kpi_signals)
+    assert all(signal.value != "Qualitative signal" for signal in brief.kpi_signals)
     assert any(point.category == "Risk" for point in brief.key_points)
-    assert "latest filing" in brief.brief.lower()
+    assert "filing readout" in brief.brief.lower()
+
+
+def test_structured_answer_returns_claims_with_reasoning():
+    service = FilingService()
+
+    answer, evidence_points, limitations, method = service._synthesize_answer(
+        "What are the main risks?",
+        [
+            FilingCitation(
+                section_name="Risk Factors",
+                item="Item 1A",
+                chunk_index=0,
+                excerpt="Export controls may delay customer shipments and limit product availability.",
+                score=1.0,
+            )
+        ],
+    )
+
+    assert "strongest cited risk signal" in answer.lower()
+    assert evidence_points[0].claim
+    assert evidence_points[0].why_it_matters
+    assert evidence_points[0].confidence in {"low", "medium", "high"}
+    assert limitations
+    assert method == "structured-cited-synthesis"
+
+
+def test_kpi_signals_require_numeric_context():
+    service = FilingService()
+    citations = [
+        FilingCitation(
+            section_name="Management Discussion and Analysis",
+            item="Item 7",
+            chunk_index=0,
+            excerpt="Revenue increased because data center demand grew across customers.",
+            score=1.0,
+        ),
+        FilingCitation(
+            section_name="Management Discussion and Analysis",
+            item="Item 7",
+            chunk_index=1,
+            excerpt="Revenue increased 30% because data center demand grew across customers.",
+            score=1.0,
+        ),
+    ]
+
+    signals = service._kpi_signals(citations)
+
+    assert len(signals) == 1
+    assert signals[0].label == "Revenue"
+    assert signals[0].value == "30%"
 
 
 def test_compare_filings_returns_section_deltas_with_citations():
@@ -412,6 +468,7 @@ def test_compare_filings_returns_section_deltas_with_citations():
     assert comparison.ticker == "NVDA"
     assert comparison.latest_accession_number == "0001045810-26-000123"
     assert comparison.previous_accession_number == "0001045810-25-000456"
+    assert "latest filing changes" in comparison.overall_change_summary.lower()
     assert comparison.compared_sections[0].section_name == "Risk Factors"
     assert "export" in comparison.compared_sections[0].added_terms
     assert "competition" in comparison.compared_sections[0].removed_terms
@@ -449,6 +506,63 @@ def test_compare_latest_ingested_filings_requires_two_filings(tmp_path):
 
     with pytest.raises(Exception, match="At least two ingested filings"):
         service.compare_latest_ingested_filings("NVDA")
+
+
+def test_get_ingested_filings_orders_by_filing_date(tmp_path):
+    service = FilingService(data_dir=tmp_path)
+    older = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="9999999999-99-999999",
+        form="10-Q",
+        filing_date="2025-05-01",
+        report_date="2025-04-30",
+        primary_document="nvda-20250430.htm",
+        source_url="https://www.sec.gov/older",
+        index_url="https://www.sec.gov/older-index",
+        local_path=str(tmp_path / "NVDA_999999999999999999.json"),
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text="Competition and supply constraints may affect revenue.",
+                word_count=7,
+            )
+        ],
+        ingested_at="2026-05-20T00:00:00+00:00",
+    )
+    newer = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0000000000-00-000001",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/newer",
+        index_url="https://www.sec.gov/newer-index",
+        local_path=str(tmp_path / "NVDA_000000000000000001.json"),
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text="Export controls may delay customer shipments.",
+                word_count=6,
+            )
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    service._persist(older, "<html></html>")
+    service._persist(newer, "<html></html>")
+
+    filings = service.get_ingested_filings("NVDA", limit=2)
+
+    assert [filing.accession_number for filing in filings] == [
+        "0000000000-00-000001",
+        "9999999999-99-999999",
+    ]
 
 
 @pytest.mark.asyncio

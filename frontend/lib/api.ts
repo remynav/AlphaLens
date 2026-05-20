@@ -72,6 +72,9 @@ export type FilingAnswerPoint = {
   label: string;
   text: string;
   citation_index: number;
+  claim: string | null;
+  why_it_matters: string | null;
+  confidence: string;
 };
 
 export type FilingQuestionHistoryEntry = {
@@ -92,12 +95,28 @@ export type FilingBriefPoint = {
   citation_index: number;
 };
 
+export type FilingKpiSignal = {
+  label: string;
+  value: string;
+  context: string;
+  citation_index: number;
+};
+
+export type FilingThesisCases = {
+  bull_case: string[];
+  bear_case: string[];
+  watch_for: string[];
+};
+
 export type FilingInvestorBrief = {
   ticker: string;
   company_name: string;
   accession_number: string;
   filing_date: string;
   brief: string;
+  thesis_cases: FilingThesisCases;
+  red_flags: FilingBriefPoint[];
+  kpi_signals: FilingKpiSignal[];
   key_points: FilingBriefPoint[];
   watch_items: string[];
   limitations: string[];
@@ -134,6 +153,7 @@ export type FilingComparison = {
   latest_filing_date: string;
   previous_accession_number: string;
   previous_filing_date: string;
+  overall_change_summary: string;
   compared_sections: FilingSectionComparison[];
   comparison_method: string;
   compared_at: string;

@@ -172,6 +172,9 @@ class FilingAnswerPoint(BaseModel):
     label: str
     text: str
     citation_index: int
+    claim: str | None = None
+    why_it_matters: str | None = None
+    confidence: str = "medium"
 
 
 class FilingQuestionAnswer(BaseModel):
@@ -206,12 +209,28 @@ class FilingBriefPoint(BaseModel):
     citation_index: int
 
 
+class FilingKpiSignal(BaseModel):
+    label: str
+    value: str
+    context: str
+    citation_index: int
+
+
+class FilingThesisCases(BaseModel):
+    bull_case: list[str] = Field(default_factory=list)
+    bear_case: list[str] = Field(default_factory=list)
+    watch_for: list[str] = Field(default_factory=list)
+
+
 class FilingInvestorBrief(BaseModel):
     ticker: str
     company_name: str
     accession_number: str
     filing_date: str
     brief: str
+    thesis_cases: FilingThesisCases = Field(default_factory=FilingThesisCases)
+    red_flags: list[FilingBriefPoint] = Field(default_factory=list)
+    kpi_signals: list[FilingKpiSignal] = Field(default_factory=list)
     key_points: list[FilingBriefPoint]
     watch_items: list[str]
     limitations: list[str]
@@ -248,6 +267,7 @@ class FilingComparison(BaseModel):
     latest_filing_date: str
     previous_accession_number: str
     previous_filing_date: str
+    overall_change_summary: str
     compared_sections: list[FilingSectionComparison]
     comparison_method: str
     compared_at: str
@@ -342,23 +362,24 @@ class FilingService:
 
     def get_ingested_filings(self, ticker: str, limit: int = 10) -> list[FilingSummary]:
         normalized = CompanyService()._normalize_ticker(ticker)
-        paths = sorted(
-            (
-                path
-                for path in self.data_dir.glob(f"{normalized}_*.json")
-                if not path.name.endswith("_question_history.json")
-            ),
-            reverse=True,
-        )
+        paths = [
+            path
+            for path in self.data_dir.glob(f"{normalized}_*.json")
+            if not path.name.endswith("_question_history.json")
+        ]
         if not paths:
             return []
 
         filings: list[FilingSummary] = []
-        for path in paths[:limit]:
+        for path in paths:
             with path.open(encoding="utf-8") as file:
                 payload = json.load(file)
             filings.append(FilingSummary.model_validate(payload["summary"]))
-        return filings
+        filings.sort(
+            key=lambda filing: (filing.filing_date, filing.report_date or "", filing.ingested_at),
+            reverse=True,
+        )
+        return filings[:limit]
 
     def answer_question(self, ticker: str, question: str) -> FilingQuestionAnswer:
         normalized_question = question.strip()
@@ -428,6 +449,9 @@ class FilingService:
             for index, citation in enumerate(citations, start=1)
         ]
         brief = self._brief_summary(filing, key_points)
+        thesis_cases = self._thesis_cases(key_points)
+        red_flags = self._red_flags(key_points)
+        kpi_signals = self._kpi_signals(citations)
         watch_items = self._watch_items(key_points)
 
         return FilingInvestorBrief(
@@ -436,6 +460,9 @@ class FilingService:
             accession_number=filing.accession_number,
             filing_date=filing.filing_date,
             brief=brief,
+            thesis_cases=thesis_cases,
+            red_flags=red_flags,
+            kpi_signals=kpi_signals,
             key_points=key_points,
             watch_items=watch_items,
             limitations=[
@@ -494,6 +521,7 @@ class FilingService:
             latest_filing_date=latest.filing_date,
             previous_accession_number=previous.accession_number,
             previous_filing_date=previous.filing_date,
+            overall_change_summary=self._overall_change_summary(comparisons),
             compared_sections=comparisons,
             comparison_method="section-term-delta-with-citations",
             compared_at=datetime.now(UTC).isoformat(),
@@ -681,8 +709,10 @@ class FilingService:
                 score = (semantic_score * 0.85) + (lexical_score * 0.15)
             if score <= 0.05:
                 continue
+            evidence_quality = self._evidence_quality_score(chunk.excerpt)
             if self._is_boilerplate_excerpt(chunk.excerpt):
                 score *= 0.15
+            score *= evidence_quality
             if "risk" in query_terms and "risk" in chunk.section_name.lower():
                 score *= 1.35
 
@@ -866,11 +896,7 @@ class FilingService:
                 pass
 
         evidence_points = [
-            FilingAnswerPoint(
-                label=self._classify_investor_category(citation),
-                text=self._answer_point_text(citation),
-                citation_index=index,
-            )
+            self._answer_point(citation, index)
             for index, citation in enumerate(citations, start=1)
         ]
         direct_answer = self._direct_answer(question, evidence_points)
@@ -901,26 +927,39 @@ class FilingService:
         if not labels:
             return "The retrieved filing excerpts do not support a substantive answer."
 
-        focus = ", ".join(labels[:3]).lower()
+        claims = [point.claim or point.text for point in evidence_points[:3]]
+        lead_claim = claims[0]
         evidence_terms = self._evidence_focus_terms(evidence_points)
         if "risk" in question.lower():
-            if evidence_terms:
-                return "The strongest retrieved risk evidence concerns " + evidence_terms + "."
-            return "The filing evidence points mainly to " + focus + " as the most relevant risk areas."
+            return "The strongest cited risk signal is: " + lead_claim
         if any(term in question.lower() for term in ["change", "changed", "different"]):
-            return "The retrieved evidence highlights changes or emphasis around " + focus + "."
-        return "The filing evidence supports a focused answer around " + focus + "."
+            return "The retrieved evidence points to changed emphasis around " + (evidence_terms or labels[0].lower()) + "."
+        if any(term in question.lower() for term in ["revenue", "growth", "margin", "income"]):
+            return "The strongest cited operating signal is: " + lead_claim
+        return "The strongest cited filing signal is: " + lead_claim
 
     def _evidence_focus_terms(self, evidence_points: list[FilingAnswerPoint]) -> str:
         counts: dict[str, int] = {}
         for point in evidence_points:
             for term in self._search_terms(point.text):
-                if term in {"risk", "factor", "company", "business", "result"}:
+                if term in {"risk", "factor", "company", "business", "result", "could", "would"}:
                     continue
                 counts[term] = counts.get(term, 0) + 1
         ranked = sorted(counts.items(), key=lambda entry: (entry[1], entry[0]), reverse=True)
         terms = [self._display_search_term(term) for term, _ in ranked[:4]]
         return ", ".join(terms)
+
+    def _answer_point(self, citation: FilingCitation, citation_index: int) -> FilingAnswerPoint:
+        category = self._classify_investor_category(citation)
+        text = self._answer_point_text(citation)
+        return FilingAnswerPoint(
+            label=category,
+            text=text,
+            citation_index=citation_index,
+            claim=self._claim_from_sentence(category, text),
+            why_it_matters=self._why_it_matters(category, text),
+            confidence=self._claim_confidence(text),
+        )
 
     def _answer_point_text(self, citation: FilingCitation) -> str:
         sentence = self._best_sentence(citation.excerpt, self._category_terms(citation))
@@ -937,7 +976,11 @@ class FilingService:
         for prompt in prompts:
             for citation in self._retrieve_citations(filing, prompt):
                 key = (citation.item, citation.chunk_index)
-                if key in seen or self._is_boilerplate_excerpt(citation.excerpt):
+                if (
+                    key in seen
+                    or self._is_boilerplate_excerpt(citation.excerpt)
+                    or self._evidence_quality_score(citation.excerpt) < 0.8
+                ):
                     continue
                 seen.add(key)
                 preferred.append(citation)
@@ -947,12 +990,27 @@ class FilingService:
 
     def _classify_investor_category(self, citation: FilingCitation) -> str:
         section = citation.section_name.lower()
+        lowered = citation.excerpt.lower()
         if "risk" in section:
             return "Risk"
         if "control" in section:
             return "Controls"
         if "financial" in section:
             return "Financial Disclosure"
+        if any(
+            term in lowered
+            for term in [
+                "adversely affect",
+                "could result",
+                "may result",
+                "volatility",
+                "warranty cost",
+                "constraint",
+                "delay",
+                "litigation",
+            ]
+        ):
+            return "Risk"
 
         terms = self._search_terms(citation.excerpt)
         scores = {
@@ -964,12 +1022,13 @@ class FilingService:
 
     def _headline_for_citation(self, citation: FilingCitation) -> str:
         category = self._classify_investor_category(citation)
+        sentence = self._investor_detail(citation)
         terms = sorted(
-            self._search_terms(citation.excerpt)
+            self._search_terms(sentence)
             & {self._normalize_search_term(term) for term in self._category_terms(citation)}
         )
         if terms:
-            return category + ": " + ", ".join(self._display_search_term(term) for term in terms[:3])
+            return category + ": " + ", ".join(self._display_search_term(term) for term in terms[:2])
         return category + " signal from " + citation.item
 
     def _investor_detail(self, citation: FilingCitation) -> str:
@@ -977,17 +1036,18 @@ class FilingService:
         return self._excerpt(sentence, 300)
 
     def _brief_summary(self, filing: FilingSummary, key_points: list[FilingBriefPoint]) -> str:
+        if not key_points:
+            return filing.company_name + " has no investor brief points from the latest filing evidence."
         categories = []
         for point in key_points:
             if point.category not in categories:
                 categories.append(point.category)
-        if not categories:
-            return filing.company_name + " has no investor brief points from the latest filing evidence."
+        focus = ", ".join(category.lower() for category in categories[:3])
         return (
             filing.company_name
-            + "'s latest filing surfaces "
-            + ", ".join(categories[:4]).lower()
-            + " as the main evidence-backed areas to review before deeper analysis."
+            + "'s latest filing readout is organized around "
+            + focus
+            + ". Use the thesis, risk factors, and source claims below to inspect the cited evidence."
         )
 
     def _watch_items(self, key_points: list[FilingBriefPoint]) -> list[str]:
@@ -1004,6 +1064,131 @@ class FilingService:
             if len(items) >= 3:
                 break
         return items or ["Review cited filing evidence against future filings and reported results."]
+
+    def _thesis_cases(self, key_points: list[FilingBriefPoint]) -> FilingThesisCases:
+        bull_case: list[str] = []
+        bear_case: list[str] = []
+        watch_for: list[str] = []
+        for point in key_points:
+            if point.category == "Business Driver":
+                bull_case.append(point.detail)
+            elif point.category == "Risk":
+                bear_case.append(point.detail)
+            elif point.category == "Liquidity":
+                watch_for.append("Balance sheet: " + point.detail)
+            elif point.category == "Controls":
+                watch_for.append("Governance: " + point.detail)
+        if not bull_case:
+            bull_case.append("No source-grounded bull case was strong enough to summarize from the retrieved filing evidence.")
+        if not bear_case:
+            bear_case.append("No specific bear case was strong enough to summarize from the retrieved filing evidence.")
+        if not watch_for:
+            watch_for.append("Compare these claims against the next filing and reported financial results.")
+        return FilingThesisCases(
+            bull_case=bull_case[:3],
+            bear_case=bear_case[:3],
+            watch_for=watch_for[:2],
+        )
+
+    def _red_flags(self, key_points: list[FilingBriefPoint]) -> list[FilingBriefPoint]:
+        flagged = [
+            point
+            for point in key_points
+            if self._is_specific_red_flag(point)
+        ]
+        return flagged[:3]
+
+    def _kpi_signals(self, citations: list[FilingCitation]) -> list[FilingKpiSignal]:
+        signals: list[FilingKpiSignal] = []
+        seen: set[str] = set()
+        kpi_terms = {
+            "revenue": "Revenue",
+            "sales": "Sales",
+            "margin": "Margin",
+            "operating income": "Operating income",
+            "cash": "Cash",
+            "debt": "Debt",
+            "capital": "Capital allocation",
+            "demand": "Demand",
+        }
+        numeric_pattern = re.compile(r"(\$\s?\d[\d,.]*\s?(?:million|billion)?|\d+(?:\.\d+)?\s?%)", re.IGNORECASE)
+        for index, citation in enumerate(citations, start=1):
+            sentence = self._best_sentence(citation.excerpt, self._category_terms(citation))
+            lowered = sentence.lower()
+            numeric_match = numeric_pattern.search(sentence)
+            if not numeric_match:
+                continue
+            for term, label in kpi_terms.items():
+                if term not in lowered or label in seen:
+                    continue
+                signals.append(
+                    FilingKpiSignal(
+                        label=label,
+                        value=numeric_match.group(0),
+                        context=self._excerpt(sentence, 220),
+                        citation_index=index,
+                    )
+                )
+                seen.add(label)
+                break
+            if len(signals) >= 4:
+                break
+        return signals
+
+    def _claim_from_sentence(self, category: str, sentence: str) -> str:
+        cleaned = self._excerpt(sentence.rstrip("."), 180)
+        if category == "Risk":
+            return cleaned + " could pressure operations, revenue timing, or investor confidence."
+        if category == "Business Driver":
+            return cleaned + " is the clearest cited operating driver."
+        if category == "Liquidity":
+            return cleaned + " is the clearest cited balance-sheet or capital-allocation signal."
+        if category == "Controls":
+            return cleaned + " is the clearest cited controls signal."
+        return cleaned + "."
+
+    def _why_it_matters(self, category: str, sentence: str) -> str:
+        lowered = sentence.lower()
+        if category == "Risk":
+            if any(term in lowered for term in ["export", "regulation", "regulatory", "tariff"]):
+                return "Regulatory constraints can limit where products are sold, raise compliance cost, or shift demand timing."
+            if any(term in lowered for term in ["supply", "constraint", "availability", "delay"]):
+                return "Supply or deployment constraints can delay revenue conversion and weaken customer satisfaction."
+            if any(term in lowered for term in ["cyber", "data", "confidential"]):
+                return "Security incidents can create legal exposure, remediation cost, and reputation damage."
+            return "The filing frames this as a possible source of operational or financial downside."
+        if category == "Business Driver":
+            return "This is useful because it points to the operating variable an investor should compare against revenue, margin, and guidance."
+        if category == "Liquidity":
+            return "This affects the company's flexibility to fund operations, invest, repurchase stock, or absorb stress."
+        if category == "Controls":
+            return "Controls language matters because weak disclosure controls can reduce confidence in reporting quality."
+        return "This excerpt is relevant because it is one of the highest-scoring filing passages retrieved for the question."
+
+    def _claim_confidence(self, sentence: str) -> str:
+        if re.search(r"(\$\s?\d|\d+(?:\.\d+)?\s?%)", sentence):
+            return "high"
+        if self._evidence_quality_score(sentence) >= 1.1:
+            return "medium"
+        return "low"
+
+    def _is_specific_red_flag(self, point: FilingBriefPoint) -> bool:
+        text = (point.headline + " " + point.detail).lower()
+        if self._is_boilerplate_excerpt(text):
+            return False
+        red_flag_terms = [
+            "material weakness",
+            "export control",
+            "geopolitical",
+            "litigation",
+            "cybersecurity",
+            "breach",
+            "delay",
+            "constraint",
+            "regulatory",
+            "tariff",
+        ]
+        return any(term in text for term in red_flag_terms) and self._evidence_quality_score(text) >= 0.9
 
     def _category_terms(self, citation: FilingCitation) -> set[str]:
         category = self._classify_investor_category(citation)
@@ -1038,8 +1223,28 @@ class FilingService:
             "other cautionary statements and risks described elsewhere",
             "forward-looking statements",
             "has not otherwise had a material effect",
+            "whether currently known or unknown",
+            "described in part i, item 1a",
+            "materially and adversely affected by a number of factors",
         ]
         return any(pattern in lowered for pattern in boilerplate_patterns)
+
+    def _evidence_quality_score(self, text: str) -> float:
+        lowered = text.lower()
+        score = 1.0
+        if re.search(r"(\$\s?\d|\d+(?:\.\d+)?\s?%)", text):
+            score += 0.25
+        if any(term in lowered for term in ["increased", "decreased", "grew", "declined", "improved", "higher", "lower"]):
+            score += 0.2
+        if any(term in lowered for term in ["customer", "segment", "geography", "product", "data center", "iphone", "services"]):
+            score += 0.15
+        if any(term in lowered for term in ["material weakness", "export", "tariff", "cybersecurity", "litigation"]):
+            score += 0.15
+        if any(term in lowered for term in ["may adversely affect", "could adversely affect", "cannot assure", "from time to time"]):
+            score -= 0.25
+        if self._is_boilerplate_excerpt(text):
+            score -= 0.5
+        return max(0.2, min(score, 1.5))
 
     def _request_cited_llm_answer(self, question: str, citations: list[FilingCitation]) -> str:
         evidence = "\n\n".join(
@@ -1140,6 +1345,22 @@ class FilingService:
         ]
         scored.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
         return [self._display_search_term(term) for _, _, term in scored if len(term) > 3]
+
+    def _overall_change_summary(self, comparisons: list[FilingSectionComparison]) -> str:
+        largest = sorted(comparisons, key=lambda section: abs(section.word_count_delta), reverse=True)[:2]
+        emphasis: list[str] = []
+        for section in comparisons:
+            emphasis.extend(section.added_terms[:2])
+        unique_emphasis = list(dict.fromkeys(emphasis))[:5]
+        parts = [
+            "The latest filing changes are concentrated in "
+            + ", ".join(section.item for section in largest)
+            + "."
+        ]
+        if unique_emphasis:
+            parts.append("Newer emphasis centers on " + ", ".join(unique_emphasis) + ".")
+        parts.append("Treat this as a triage signal and confirm materiality in the cited excerpts.")
+        return " ".join(parts)
 
     def _display_search_term(self, term: str) -> str:
         display_fixes = {

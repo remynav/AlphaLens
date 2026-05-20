@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, MouseEvent, useMemo, useState } from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -61,6 +61,16 @@ function formatDate(value: string | null) {
 function formatSigned(value: number) {
   const sign = value > 0 ? "+" : "";
   return sign + value.toLocaleString();
+}
+
+function sectionAnchorId(item: string, name: string) {
+  return (
+    "section-" +
+    (item + "-" + name)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/(^-|-$)/g, "")
+  );
 }
 
 type MetricCardProps = {
@@ -125,6 +135,19 @@ export function CompanySearch() {
     if (change < 0) return "negative";
     return "default";
   }, [company]);
+
+  function sourceHref(item: string, sectionName: string) {
+    return "#" + sectionAnchorId(item, sectionName);
+  }
+
+  function openSourceSection(event: MouseEvent<HTMLAnchorElement>, item: string, sectionName: string) {
+    event.preventDefault();
+    const section = document.getElementById(sectionAnchorId(item, sectionName));
+    if (section instanceof HTMLDetailsElement) {
+      section.open = true;
+      section.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+  }
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -445,19 +468,113 @@ export function CompanySearch() {
                           </div>
                         </div>
 
-                        <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                        <div className="mt-4 rounded-lg border border-white/10 bg-mint/10 p-3">
+                          <div className="eyebrow text-mint">Thesis</div>
+                          <div className="mt-3 grid gap-4 lg:grid-cols-3">
+                            <div>
+                              <h4 className="text-sm font-black text-bone">Bull case</h4>
+                              <ul className="mt-2 space-y-2 text-sm leading-6 text-bone/80">
+                                {brief.thesis_cases.bull_case.map((point) => (
+                                  <li key={point}>{point}</li>
+                                ))}
+                              </ul>
+                            </div>
+                            <div>
+                              <h4 className="text-sm font-black text-bone">Bear case</h4>
+                              <ul className="mt-2 space-y-2 text-sm leading-6 text-bone/80">
+                                {brief.thesis_cases.bear_case.map((point) => (
+                                  <li key={point}>{point}</li>
+                                ))}
+                              </ul>
+                            </div>
+                            <div>
+                              <h4 className="text-sm font-black text-bone">What would change the view</h4>
+                              <ul className="mt-2 space-y-2 text-sm leading-6 text-bone/80">
+                                {brief.thesis_cases.watch_for.map((point) => (
+                                  <li key={point}>{point}</li>
+                                ))}
+                              </ul>
+                            </div>
+                          </div>
+                        </div>
+
+                        {brief.kpi_signals.length > 0 ? (
+                          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                            {brief.kpi_signals.map((signal) => (
+                              <article
+                                key={signal.label + signal.citation_index}
+                                className="rounded-lg border border-white/10 bg-white/5 p-3"
+                              >
+                                <div className="text-xs font-black uppercase tracking-normal text-mint">
+                                  {signal.label} / Citation {signal.citation_index}
+                                </div>
+                                <div className="mt-2 text-lg font-black text-bone">{signal.value}</div>
+                                <p className="mt-2 text-sm leading-6 text-bone/80">{signal.context}</p>
+                              </article>
+                            ))}
+                          </div>
+                        ) : null}
+
+                        {brief.red_flags.length > 0 ? (
+                          <div className="mt-4 rounded-lg border border-red-300/30 bg-red-950/20 p-3">
+                            <div className="eyebrow text-red-100">Red flags</div>
+                            <ul className="mt-3 space-y-2 text-sm leading-6 text-bone/80">
+                              {brief.red_flags.map((point) => (
+                                <li key={point.headline + point.citation_index}>
+                                  <span className="font-black text-bone">{point.headline}:</span>{" "}
+                                  {point.detail}
+                                </li>
+                              ))}
+                            </ul>
+                            {(() => {
+                              const citation = brief.citations[brief.red_flags[0].citation_index - 1];
+                              if (!citation) return null;
+                              return (
+                                <a
+                                  href={sourceHref(citation.item, citation.section_name)}
+                                  onClick={(event) =>
+                                    openSourceSection(event, citation.item, citation.section_name)
+                                  }
+                                  className="mt-3 inline-flex text-xs font-black uppercase tracking-normal text-red-100 hover:text-bone"
+                                >
+                                  View Risk Factors in Filing
+                                </a>
+                              );
+                            })()}
+                          </div>
+                        ) : null}
+
+                        <div className="mt-4 rounded-lg border border-white/10 bg-white/5 p-3">
+                          <div className="eyebrow text-mint">Source claims</div>
+                          <div className="mt-3 grid gap-2 md:grid-cols-2">
                           {brief.key_points.map((point) => (
                             <article
                               key={point.headline + point.citation_index}
-                              className="rounded-lg border border-white/10 bg-white/5 p-3"
+                              className="rounded-md border border-white/10 px-3 py-2"
                             >
                               <div className="text-xs font-black uppercase tracking-normal text-mint">
                                 {point.category} / Citation {point.citation_index}
                               </div>
-                              <h4 className="mt-2 text-base font-black">{point.headline}</h4>
-                              <p className="mt-2 text-sm leading-6 text-bone/80">{point.detail}</p>
+                              <div className="mt-1 text-sm font-black text-bone">{point.headline}</div>
+                              <a
+                                href={sourceHref(
+                                  brief.citations[point.citation_index - 1]?.item ?? "",
+                                  brief.citations[point.citation_index - 1]?.section_name ?? "",
+                                )}
+                                onClick={(event) =>
+                                  openSourceSection(
+                                    event,
+                                    brief.citations[point.citation_index - 1]?.item ?? "",
+                                    brief.citations[point.citation_index - 1]?.section_name ?? "",
+                                  )
+                                }
+                                className="mt-2 inline-flex text-xs font-black uppercase tracking-normal text-mint hover:text-bone"
+                              >
+                                See source section
+                              </a>
                             </article>
                           ))}
+                          </div>
                         </div>
 
                         <div className="mt-4 grid gap-3 lg:grid-cols-2">
@@ -489,6 +606,9 @@ export function CompanySearch() {
                             <h3 className="mt-1 text-xl font-black text-ink">Changes since prior filing</h3>
                             <p className="mt-2 text-sm font-semibold text-moss">
                               {comparison.previous_filing_date} to {comparison.latest_filing_date}
+                            </p>
+                            <p className="mt-2 max-w-3xl text-sm leading-6 text-moss">
+                              {comparison.overall_change_summary}
                             </p>
                           </div>
                           <div className="text-xs font-black uppercase tracking-normal text-brass">
@@ -543,11 +663,15 @@ export function CompanySearch() {
                                 </div>
                               </div>
 
-                              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                              <details className="mt-3 rounded-md border border-line bg-paper p-3">
+                                <summary className="cursor-pointer text-sm font-black text-ink">
+                                  Review comparison evidence
+                                </summary>
+                                <div className="mt-3 grid gap-3 lg:grid-cols-2">
                                 {section.citations.map((citation) => (
                                   <blockquote
                                     key={citation.filing_label + citation.accession_number + citation.excerpt}
-                                    className="border-l-4 border-brass bg-paper px-4 py-3 text-sm leading-6 text-moss"
+                                    className="border-l-4 border-brass bg-bone px-4 py-3 text-sm leading-6 text-moss"
                                   >
                                     <div className="mb-2 font-black text-ink">
                                       {citation.filing_label === "latest" ? "Latest" : "Previous"} filing
@@ -555,34 +679,27 @@ export function CompanySearch() {
                                         {citation.filing_date}
                                       </span>
                                     </div>
+                                    {citation.filing_label === "latest" ? (
+                                      <a
+                                        href={sourceHref(citation.item, citation.section_name)}
+                                        onClick={(event) =>
+                                          openSourceSection(event, citation.item, citation.section_name)
+                                        }
+                                        className="mb-2 inline-flex text-xs font-black uppercase tracking-normal text-brass hover:text-signal"
+                                      >
+                                        Jump to latest section
+                                      </a>
+                                    ) : null}
                                     {citation.excerpt}
                                   </blockquote>
                                 ))}
-                              </div>
+                                </div>
+                              </details>
                             </article>
                           ))}
                         </div>
                       </div>
                     ) : null}
-
-                    <div className="space-y-3">
-                      {filing.sections.map((section) => (
-                        <article
-                          key={section.item + section.name}
-                          className="rounded-lg border border-line bg-bone p-4 shadow-inset"
-                        >
-                          <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-                            <h3 className="text-base font-black text-ink">
-                              {section.item}: {section.name}
-                            </h3>
-                            <span className="eyebrow text-moss">
-                              {section.word_count.toLocaleString()} words
-                            </span>
-                          </div>
-                          <p className="mt-3 text-sm leading-6 text-moss">{section.text}</p>
-                        </article>
-                      ))}
-                    </div>
 
                     <div className="rounded-lg border border-line bg-paper p-4 shadow-inset">
                       <div className="flex items-center gap-2">
@@ -643,9 +760,30 @@ export function CompanySearch() {
                                     className="rounded-md border border-line bg-paper p-3"
                                   >
                                     <div className="text-xs font-black uppercase tracking-normal text-brass">
-                                      {point.label} / Citation {point.citation_index}
+                                      {point.label} / Citation {point.citation_index} / {point.confidence}
                                     </div>
-                                    <p className="mt-2 text-sm leading-6 text-moss">{point.text}</p>
+                                    <p className="mt-2 text-sm font-black leading-6 text-ink">
+                                      {point.claim ?? point.text}
+                                    </p>
+                                    {point.why_it_matters ? (
+                                      <p className="mt-2 text-sm leading-6 text-moss">{point.why_it_matters}</p>
+                                    ) : null}
+                                    <a
+                                      href={sourceHref(
+                                        answer.citations[point.citation_index - 1]?.item ?? "",
+                                        answer.citations[point.citation_index - 1]?.section_name ?? "",
+                                      )}
+                                      onClick={(event) =>
+                                        openSourceSection(
+                                          event,
+                                          answer.citations[point.citation_index - 1]?.item ?? "",
+                                          answer.citations[point.citation_index - 1]?.section_name ?? "",
+                                        )
+                                      }
+                                      className="mt-3 inline-flex text-xs font-black uppercase tracking-normal text-brass hover:text-signal"
+                                    >
+                                      See source section
+                                    </a>
                                   </article>
                                 ))}
                               </div>
@@ -655,27 +793,6 @@ export function CompanySearch() {
                                 {answer.limitations.join(" ")}
                               </p>
                             ) : null}
-                          </div>
-                          <div className="space-y-3">
-                            {answer.citations.map((citation) => (
-                              <blockquote
-                                key={citation.item + citation.section_name + citation.excerpt}
-                                className="border-l-4 border-brass bg-bone px-4 py-3 text-sm leading-6 text-moss"
-                              >
-                                <div className="mb-2 font-black text-ink">
-                                  {citation.item}: {citation.section_name}
-                                  <span className="ml-2 text-xs text-brass">
-                                    Score {citation.score.toFixed(3)}
-                                  </span>
-                                  {citation.embedding_model ? (
-                                    <span className="ml-2 text-xs text-moss">
-                                      {citation.embedding_model}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                {citation.excerpt}
-                              </blockquote>
-                            ))}
                           </div>
                         </div>
                       ) : null}
@@ -701,6 +818,32 @@ export function CompanySearch() {
                           </div>
                         </div>
                       ) : null}
+                    </div>
+
+                    <div id="filing-sections" className="space-y-3 scroll-mt-6">
+                      <div>
+                        <div className="eyebrow text-moss">Filing source sections</div>
+                        <h3 className="mt-1 text-xl font-black text-ink">Evidence library</h3>
+                      </div>
+                      {filing.sections.map((section) => (
+                        <details
+                          key={section.item + section.name}
+                          id={sectionAnchorId(section.item, section.name)}
+                          className="scroll-mt-6 rounded-lg border border-line bg-bone p-4 shadow-inset"
+                        >
+                          <summary className="cursor-pointer list-none">
+                            <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
+                              <h3 className="text-base font-black text-ink">
+                                {section.item}: {section.name}
+                              </h3>
+                              <span className="eyebrow text-moss">
+                                {section.word_count.toLocaleString()} words
+                              </span>
+                            </div>
+                          </summary>
+                          <p className="mt-3 text-sm leading-6 text-moss">{section.text}</p>
+                        </details>
+                      ))}
                     </div>
                   </div>
                 ) : null}
@@ -746,9 +889,9 @@ export function CompanySearch() {
           <div className="surface rounded-lg p-5">
             <h2 className="eyebrow text-moss">Next MVP steps</h2>
             <ol className="mt-4 space-y-3 text-sm font-medium text-moss">
-              <li className="rounded-md border border-line bg-bone px-3 py-2">1. Compare filings across reporting periods.</li>
-              <li className="rounded-md border border-line bg-bone px-3 py-2">2. Add watchlists and saved companies.</li>
-              <li className="rounded-md border border-line bg-bone px-3 py-2">3. Add exportable research notes.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">1. Add watchlists and saved companies.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">2. Add exportable research notes.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">3. Add multi-company research queues.</li>
             </ol>
           </div>
         </aside>
