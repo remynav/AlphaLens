@@ -11,7 +11,7 @@ type RouteContext = {
 export async function POST(_request: Request, context: RouteContext) {
   const { ticker } = await context.params;
   const upstreamUrl =
-    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/latest";
+    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/compare";
 
   try {
     const response = await fetch(upstreamUrl, {
@@ -22,7 +22,7 @@ export async function POST(_request: Request, context: RouteContext) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { detail: body?.detail ?? "Unable to ingest latest filing." },
+        { detail: body?.detail ?? "Unable to compare filings." },
         { status: response.status },
       );
     }
@@ -42,7 +42,7 @@ export async function POST(_request: Request, context: RouteContext) {
 export async function GET(_request: Request, context: RouteContext) {
   const { ticker } = await context.params;
   const upstreamUrl =
-    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/latest";
+    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/compare";
 
   try {
     const response = await fetch(upstreamUrl, {
@@ -52,7 +52,7 @@ export async function GET(_request: Request, context: RouteContext) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { detail: body?.detail ?? "Unable to load latest filing." },
+        { detail: body?.detail ?? "Unable to compare filings." },
         { status: response.status },
       );
     }

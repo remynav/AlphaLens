@@ -8,21 +8,26 @@ type RouteContext = {
   }>;
 };
 
-export async function POST(_request: Request, context: RouteContext) {
+export async function POST(request: Request, context: RouteContext) {
   const { ticker } = await context.params;
   const upstreamUrl =
-    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/latest";
+    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/latest/questions";
 
   try {
+    const payload = await request.json();
     const response = await fetch(upstreamUrl, {
       method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
       cache: "no-store",
     });
     const body = await response.json().catch(() => null);
 
     if (!response.ok) {
       return NextResponse.json(
-        { detail: body?.detail ?? "Unable to ingest latest filing." },
+        { detail: body?.detail ?? "Unable to answer filing question." },
         { status: response.status },
       );
     }
@@ -42,7 +47,7 @@ export async function POST(_request: Request, context: RouteContext) {
 export async function GET(_request: Request, context: RouteContext) {
   const { ticker } = await context.params;
   const upstreamUrl =
-    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/latest";
+    API_BASE_URL + "/company/" + encodeURIComponent(ticker) + "/filings/latest/questions";
 
   try {
     const response = await fetch(upstreamUrl, {
@@ -52,7 +57,7 @@ export async function GET(_request: Request, context: RouteContext) {
 
     if (!response.ok) {
       return NextResponse.json(
-        { detail: body?.detail ?? "Unable to load latest filing." },
+        { detail: body?.detail ?? "Unable to load question history." },
         { status: response.status },
       );
     }

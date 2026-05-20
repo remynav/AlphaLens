@@ -8,11 +8,27 @@ import {
   Database,
   ExternalLink,
   FileText,
+  GitCompareArrows,
+  History,
   Loader2,
+  MessageSquareQuote,
   Search,
+  Send,
 } from "lucide-react";
 
-import { CompanyOverview, FilingSummary, fetchCompany, ingestLatestFiling } from "@/lib/api";
+import {
+  CompanyOverview,
+  FilingComparison,
+  FilingQuestionHistoryEntry,
+  FilingQuestionAnswer,
+  FilingSummary,
+  askFilingQuestion,
+  compareFilings,
+  fetchCompany,
+  fetchLatestFiling,
+  fetchFilingQuestionHistory,
+  ingestLatestFiling,
+} from "@/lib/api";
 
 function formatCurrency(value: number | null, currency: string | null) {
   if (value === null) return "Unavailable";
@@ -38,6 +54,11 @@ function formatDate(value: string | null) {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
+}
+
+function formatSigned(value: number) {
+  const sign = value > 0 ? "+" : "";
+  return sign + value.toLocaleString();
 }
 
 type MetricCardProps = {
@@ -80,10 +101,18 @@ export function CompanySearch() {
   const [ticker, setTicker] = useState("NVDA");
   const [company, setCompany] = useState<CompanyOverview | null>(null);
   const [filing, setFiling] = useState<FilingSummary | null>(null);
+  const [comparison, setComparison] = useState<FilingComparison | null>(null);
+  const [question, setQuestion] = useState("What are the main risks?");
+  const [answer, setAnswer] = useState<FilingQuestionAnswer | null>(null);
+  const [questionHistory, setQuestionHistory] = useState<FilingQuestionHistoryEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [filingError, setFilingError] = useState<string | null>(null);
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
+  const [questionError, setQuestionError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isIngesting, setIsIngesting] = useState(false);
+  const [isComparing, setIsComparing] = useState(false);
+  const [isAnswering, setIsAnswering] = useState(false);
 
   const priceTone = useMemo(() => {
     const change = company?.price.change ?? 0;
@@ -101,11 +130,19 @@ export function CompanySearch() {
       const result = await fetchCompany(ticker);
       setCompany(result);
       setFiling(null);
+      setComparison(null);
+      setAnswer(null);
+      setQuestionHistory([]);
       setFilingError(null);
+      setComparisonError(null);
+      setQuestionError(null);
       setTicker(result.ticker);
     } catch (caught) {
       setCompany(null);
       setFiling(null);
+      setComparison(null);
+      setAnswer(null);
+      setQuestionHistory([]);
       setError(caught instanceof Error ? caught.message : "Something went wrong.");
     } finally {
       setIsLoading(false);
@@ -121,11 +158,55 @@ export function CompanySearch() {
     try {
       const result = await ingestLatestFiling(company.ticker);
       setFiling(result);
+      setComparison(null);
+      setAnswer(null);
+      setComparisonError(null);
+      setQuestionHistory(await fetchFilingQuestionHistory(company.ticker));
     } catch (caught) {
       setFiling(null);
+      setComparison(null);
+      setAnswer(null);
+      setQuestionHistory([]);
       setFilingError(caught instanceof Error ? caught.message : "Unable to ingest latest filing.");
     } finally {
       setIsIngesting(false);
+    }
+  }
+
+  async function onCompareFilings() {
+    if (!company) return;
+
+    setComparisonError(null);
+    setIsComparing(true);
+
+    try {
+      const result = await compareFilings(company.ticker);
+      setComparison(result);
+      setFiling(await fetchLatestFiling(company.ticker));
+    } catch (caught) {
+      setComparison(null);
+      setComparisonError(caught instanceof Error ? caught.message : "Unable to compare filings.");
+    } finally {
+      setIsComparing(false);
+    }
+  }
+
+  async function onAskQuestion(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!company || !filing) return;
+
+    setQuestionError(null);
+    setIsAnswering(true);
+
+    try {
+      const result = await askFilingQuestion(company.ticker, question);
+      setAnswer(result);
+      setQuestionHistory(await fetchFilingQuestionHistory(company.ticker));
+    } catch (caught) {
+      setAnswer(null);
+      setQuestionError(caught instanceof Error ? caught.message : "Unable to answer filing question.");
+    } finally {
+      setIsAnswering(false);
     }
   }
 
@@ -237,24 +318,46 @@ export function CompanySearch() {
                     <h2 className="mt-4 text-2xl font-black tracking-normal text-ink">Latest 10-K / 10-Q</h2>
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-moss">
                       Pulls the latest annual or quarterly filing from SEC EDGAR, stores the raw
-                      source locally, and extracts major sections for the next Q&A milestone.
+                      source locally, and extracts major sections for cited filing Q&A.
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    onClick={onIngestLatestFiling}
-                    disabled={isIngesting}
-                    className="icon-button bg-ink text-bone hover:bg-charcoal disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    {isIngesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
-                    Ingest latest filing
-                  </button>
+                  <div className="flex flex-col gap-2 sm:items-end">
+                    <button
+                      type="button"
+                      onClick={onIngestLatestFiling}
+                      disabled={isIngesting}
+                      className="icon-button bg-ink text-bone hover:bg-charcoal disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {isIngesting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Database className="h-4 w-4" />}
+                      Ingest latest filing
+                    </button>
+                    <button
+                      type="button"
+                      onClick={onCompareFilings}
+                      disabled={isComparing}
+                      className="icon-button bg-signal text-white hover:bg-brass disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      {isComparing ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <GitCompareArrows className="h-4 w-4" />
+                      )}
+                      Compare periods
+                    </button>
+                  </div>
                 </div>
 
                 {filingError ? (
                   <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
                     <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
                     <p className="text-sm font-semibold">{filingError}</p>
+                  </div>
+                ) : null}
+
+                {comparisonError ? (
+                  <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+                    <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                    <p className="text-sm font-semibold">{comparisonError}</p>
                   </div>
                 ) : null}
 
@@ -286,6 +389,90 @@ export function CompanySearch() {
                       </div>
                     </div>
 
+                    {comparison ? (
+                      <div className="rounded-lg border border-line bg-paper p-4 shadow-inset">
+                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                          <div>
+                            <div className="eyebrow text-brass">Filing period comparison</div>
+                            <h3 className="mt-1 text-xl font-black text-ink">Changes since prior filing</h3>
+                            <p className="mt-2 text-sm font-semibold text-moss">
+                              {comparison.previous_filing_date} to {comparison.latest_filing_date}
+                            </p>
+                          </div>
+                          <div className="text-xs font-black uppercase tracking-normal text-brass">
+                            {comparison.comparison_method}
+                          </div>
+                        </div>
+
+                        <div className="mt-4 space-y-3">
+                          {comparison.compared_sections.map((section) => (
+                            <article
+                              key={section.item + section.section_name}
+                              className="rounded-lg border border-line bg-bone p-4"
+                            >
+                              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                                <div>
+                                  <h4 className="text-base font-black text-ink">
+                                    {section.item}: {section.section_name}
+                                  </h4>
+                                  <p className="mt-2 text-sm leading-6 text-moss">{section.summary}</p>
+                                </div>
+                                <div className="rounded-md border border-line bg-paper px-3 py-2 text-sm font-black text-ink">
+                                  {formatSigned(section.word_count_delta)} words
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                                <div className="rounded-md border border-line bg-paper p-3">
+                                  <div className="eyebrow text-moss">Newer emphasis</div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {section.added_terms.map((term) => (
+                                      <span
+                                        key={term}
+                                        className="rounded-md bg-mint px-2 py-1 text-xs font-black text-ink"
+                                      >
+                                        {term}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div className="rounded-md border border-line bg-paper p-3">
+                                  <div className="eyebrow text-moss">Reduced emphasis</div>
+                                  <div className="mt-2 flex flex-wrap gap-2">
+                                    {section.removed_terms.map((term) => (
+                                      <span
+                                        key={term}
+                                        className="rounded-md bg-line px-2 py-1 text-xs font-black text-moss"
+                                      >
+                                        {term}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="mt-3 grid gap-3 lg:grid-cols-2">
+                                {section.citations.map((citation) => (
+                                  <blockquote
+                                    key={citation.filing_label + citation.accession_number + citation.excerpt}
+                                    className="border-l-4 border-brass bg-paper px-4 py-3 text-sm leading-6 text-moss"
+                                  >
+                                    <div className="mb-2 font-black text-ink">
+                                      {citation.filing_label === "latest" ? "Latest" : "Previous"} filing
+                                      <span className="ml-2 text-xs text-brass">
+                                        {citation.filing_date}
+                                      </span>
+                                    </div>
+                                    {citation.excerpt}
+                                  </blockquote>
+                                ))}
+                              </div>
+                            </article>
+                          ))}
+                        </div>
+                      </div>
+                    ) : null}
+
                     <div className="space-y-3">
                       {filing.sections.map((section) => (
                         <article
@@ -303,6 +490,103 @@ export function CompanySearch() {
                           <p className="mt-3 text-sm leading-6 text-moss">{section.text}</p>
                         </article>
                       ))}
+                    </div>
+
+                    <div className="rounded-lg border border-line bg-paper p-4 shadow-inset">
+                      <div className="flex items-center gap-2">
+                        <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-bone">
+                          <MessageSquareQuote className="h-4 w-4" />
+                        </span>
+                        <div>
+                          <div className="eyebrow text-brass">Cited filing Q&A</div>
+                          <h3 className="mt-1 text-xl font-black text-ink">Ask the ingested filing</h3>
+                        </div>
+                      </div>
+
+                      <form onSubmit={onAskQuestion} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
+                        <label className="sr-only" htmlFor="filing-question">
+                          Filing question
+                        </label>
+                        <input
+                          id="filing-question"
+                          value={question}
+                          onChange={(event) => setQuestion(event.target.value)}
+                          placeholder="Ask about risks, revenue, controls..."
+                          className="h-12 w-full rounded-lg border border-line bg-white px-3 text-base font-semibold text-ink outline-none transition placeholder:text-moss focus:border-brass focus:ring-2 focus:ring-brass/25"
+                        />
+                        <button
+                          type="submit"
+                          disabled={isAnswering}
+                          className="icon-button bg-signal text-white hover:bg-brass disabled:cursor-not-allowed disabled:opacity-70"
+                        >
+                          {isAnswering ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                          Ask
+                        </button>
+                      </form>
+
+                      {questionError ? (
+                        <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
+                          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
+                          <p className="text-sm font-semibold">{questionError}</p>
+                        </div>
+                      ) : null}
+
+                      {answer ? (
+                        <div className="mt-4 space-y-4">
+                          <div className="rounded-lg border border-line bg-bone p-4">
+                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                              <div className="eyebrow text-moss">Answer</div>
+                              <div className="text-xs font-black uppercase tracking-normal text-brass">
+                                {answer.retrieval_method} / {answer.synthesis_method}
+                              </div>
+                            </div>
+                            <p className="mt-2 text-sm leading-6 text-ink">{answer.answer}</p>
+                          </div>
+                          <div className="space-y-3">
+                            {answer.citations.map((citation) => (
+                              <blockquote
+                                key={citation.item + citation.section_name + citation.excerpt}
+                                className="border-l-4 border-brass bg-bone px-4 py-3 text-sm leading-6 text-moss"
+                              >
+                                <div className="mb-2 font-black text-ink">
+                                  {citation.item}: {citation.section_name}
+                                  <span className="ml-2 text-xs text-brass">
+                                    Score {citation.score.toFixed(3)}
+                                  </span>
+                                  {citation.embedding_model ? (
+                                    <span className="ml-2 text-xs text-moss">
+                                      {citation.embedding_model}
+                                    </span>
+                                  ) : null}
+                                </div>
+                                {citation.excerpt}
+                              </blockquote>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {questionHistory.length > 0 ? (
+                        <div className="mt-4 rounded-lg border border-line bg-bone p-4">
+                          <div className="flex items-center gap-2">
+                            <History className="h-4 w-4 text-brass" />
+                            <div className="eyebrow text-moss">Saved question history</div>
+                          </div>
+                          <div className="mt-3 space-y-3">
+                            {questionHistory.map((entry) => (
+                              <article
+                                key={entry.answered_at + entry.question}
+                                className="rounded-md border border-line bg-paper px-3 py-2 text-sm"
+                              >
+                                <div className="font-black text-ink">{entry.question}</div>
+                                <div className="mt-1 text-xs font-semibold text-moss">
+                                  {entry.citation_count} citations / {formatDate(entry.answered_at)}
+                                </div>
+                              </article>
+                            ))}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                   </div>
                 ) : null}
@@ -348,9 +632,9 @@ export function CompanySearch() {
           <div className="surface rounded-lg p-5">
             <h2 className="eyebrow text-moss">Next MVP steps</h2>
             <ol className="mt-4 space-y-3 text-sm font-medium text-moss">
-              <li className="rounded-md border border-line bg-bone px-3 py-2">1. Chunk filing sections for retrieval.</li>
-              <li className="rounded-md border border-line bg-bone px-3 py-2">2. Generate embeddings and vector search.</li>
-              <li className="rounded-md border border-line bg-bone px-3 py-2">3. Ask questions over cited filing evidence.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">1. Compare filings across reporting periods.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">2. Add watchlists and saved companies.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">3. Add exportable research notes.</li>
             </ol>
           </div>
         </aside>

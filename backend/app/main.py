@@ -2,7 +2,11 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.services.company_service import CompanyLookupError, CompanyService
-from app.services.filing_service import FilingIngestionError, FilingService
+from app.services.filing_service import (
+    FilingIngestionError,
+    FilingQuestionRequest,
+    FilingService,
+)
 
 app = FastAPI(
     title="AlphaLens API",
@@ -55,3 +59,36 @@ async def get_latest_ingested_filing(ticker: str):
             detail="No ingested filing found. Ingest the latest filing first.",
         )
     return filing
+
+
+@app.post("/company/{ticker}/filings/latest/questions")
+async def ask_latest_filing_question(ticker: str, request: FilingQuestionRequest):
+    service = FilingService()
+    try:
+        return service.answer_question(ticker, request.question)
+    except FilingIngestionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/company/{ticker}/filings/latest/questions")
+async def get_latest_filing_question_history(ticker: str):
+    service = FilingService()
+    return service.get_question_history(ticker)
+
+
+@app.post("/company/{ticker}/filings/compare")
+async def ingest_and_compare_filings(ticker: str):
+    service = FilingService()
+    try:
+        return await service.ingest_comparison_filings(ticker)
+    except (CompanyLookupError, FilingIngestionError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/company/{ticker}/filings/compare")
+async def compare_ingested_filings(ticker: str):
+    service = FilingService()
+    try:
+        return service.compare_latest_ingested_filings(ticker)
+    except FilingIngestionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc

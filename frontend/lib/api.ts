@@ -40,7 +40,73 @@ export type FilingSummary = {
   index_url: string;
   local_path: string;
   sections: FilingSection[];
+  chunk_embeddings: unknown[];
   ingested_at: string;
+};
+
+export type FilingCitation = {
+  section_name: string;
+  item: string;
+  chunk_index: number;
+  excerpt: string;
+  score: number;
+  retrieval_method: string;
+  embedding_model: string | null;
+};
+
+export type FilingQuestionAnswer = {
+  ticker: string;
+  accession_number: string;
+  question: string;
+  answer: string;
+  citations: FilingCitation[];
+  retrieval_method: string;
+  synthesis_method: string;
+  answered_at: string;
+};
+
+export type FilingQuestionHistoryEntry = {
+  ticker: string;
+  accession_number: string;
+  question: string;
+  answer: string;
+  citation_count: number;
+  retrieval_method: string;
+  synthesis_method: string;
+  answered_at: string;
+};
+
+export type FilingComparisonCitation = {
+  filing_label: string;
+  accession_number: string;
+  filing_date: string;
+  section_name: string;
+  item: string;
+  excerpt: string;
+};
+
+export type FilingSectionComparison = {
+  section_name: string;
+  item: string;
+  previous_word_count: number;
+  latest_word_count: number;
+  word_count_delta: number;
+  added_terms: string[];
+  removed_terms: string[];
+  summary: string;
+  citations: FilingComparisonCitation[];
+};
+
+export type FilingComparison = {
+  ticker: string;
+  company_name: string;
+  latest_accession_number: string;
+  latest_filing_date: string;
+  previous_accession_number: string;
+  previous_filing_date: string;
+  compared_sections: FilingSectionComparison[];
+  comparison_method: string;
+  compared_at: string;
 };
 
 export async function fetchCompany(ticker: string): Promise<CompanyOverview> {
@@ -68,6 +134,81 @@ export async function ingestLatestFiling(ticker: string): Promise<FilingSummary>
   if (!response.ok) {
     const body = await response.json().catch(() => null);
     throw new Error(body?.detail ?? "Unable to ingest latest filing.");
+  }
+
+  return response.json();
+}
+
+export async function fetchLatestFiling(ticker: string): Promise<FilingSummary> {
+  const response = await fetch(
+    "/api/company/" + encodeURIComponent(ticker) + "/filings/latest",
+    {
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? "Unable to load latest filing.");
+  }
+
+  return response.json();
+}
+
+export async function askFilingQuestion(
+  ticker: string,
+  question: string,
+): Promise<FilingQuestionAnswer> {
+  const response = await fetch(
+    "/api/company/" + encodeURIComponent(ticker) + "/filings/latest/questions",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ question }),
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? "Unable to answer filing question.");
+  }
+
+  return response.json();
+}
+
+export async function fetchFilingQuestionHistory(
+  ticker: string,
+): Promise<FilingQuestionHistoryEntry[]> {
+  const response = await fetch(
+    "/api/company/" + encodeURIComponent(ticker) + "/filings/latest/questions",
+    {
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? "Unable to load question history.");
+  }
+
+  return response.json();
+}
+
+export async function compareFilings(ticker: string): Promise<FilingComparison> {
+  const response = await fetch(
+    "/api/company/" + encodeURIComponent(ticker) + "/filings/compare",
+    {
+      method: "POST",
+      cache: "no-store",
+    },
+  );
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => null);
+    throw new Error(body?.detail ?? "Unable to compare filings.");
   }
 
   return response.json();

@@ -1,6 +1,12 @@
 import pytest
 
 from app.services.filing_service import FilingService
+from app.services.filing_service import (
+    FilingChunkEmbedding,
+    FilingCitation,
+    FilingSection,
+    FilingSummary,
+)
 
 
 def test_html_to_text_removes_tags_and_scripts():
@@ -43,6 +49,355 @@ def test_extract_sections_returns_major_filing_sections():
     assert sections[1].item == "Item 1A"
 
 
+def test_extract_sections_trims_executive_officer_text_from_risk_factors():
+    service = FilingService()
+    filing_text = """
+    Item 1A. Risk Factors
+    Export controls, supply constraints, and customer deployment delays may affect results.
+    This paragraph adds enough words for the risk section to be retained by the parser.
+    Additional risk discussion continues with cybersecurity, demand, inventory, and regulation.
+    Information About Our Executive Officers
+    Name Age Position Someone 50 President and Chief Executive Officer
+    Item 1B. Unresolved Staff Comments
+    None.
+    """
+
+    sections = service._extract_sections(filing_text)
+
+    assert sections[0].name == "Risk Factors"
+    assert "Executive Officers" not in sections[0].text
+    assert "President and Chief Executive Officer" not in sections[0].text
+
+
+def test_retrieve_citations_ranks_matching_filing_chunks():
+    service = FilingService()
+    filing = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example",
+        index_url="https://www.sec.gov/example-index",
+        local_path="/tmp/NVDA_000104581026000123.json",
+        sections=[
+            FilingSection(
+                name="Business",
+                item="Item 1",
+                text=(
+                    "The company sells accelerated computing systems and networking products. "
+                    "Demand increased across data center customers using AI workloads."
+                ),
+                word_count=18,
+            ),
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text=(
+                    "Export controls and supply constraints may reduce revenue or delay customer shipments."
+                ),
+                word_count=11,
+            ),
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    filing.chunk_embeddings = service._build_chunk_embeddings(filing.sections)
+
+    citations = service._retrieve_citations(filing, "What risks could delay customer shipments?")
+
+    assert citations[0].section_name == "Risk Factors"
+    assert "delay customer shipments" in citations[0].excerpt
+    assert citations[0].retrieval_method == "local-hash-embedding"
+
+
+def test_answer_question_uses_latest_ingested_filing(tmp_path):
+    service = FilingService(data_dir=tmp_path)
+    summary = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example",
+        index_url="https://www.sec.gov/example-index",
+        local_path=str(tmp_path / "NVDA_000104581026000123.json"),
+        sections=[
+            FilingSection(
+                name="Management Discussion and Analysis",
+                item="Item 7",
+                text=(
+                    "Revenue increased because demand grew across data center products and services. "
+                    "The company also reported stronger operating income."
+                ),
+                word_count=17,
+            )
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    service._persist(summary, "<html></html>")
+
+    answer = service.answer_question("NVDA", "Why did revenue increase?")
+
+    assert answer.ticker == "NVDA"
+    assert answer.accession_number == "0001045810-26-000123"
+    assert "Revenue increased" in answer.answer
+    assert answer.citations[0].item == "Item 7"
+    assert answer.retrieval_method == "local-hash-embedding"
+    assert answer.synthesis_method == "extractive-cited-synthesis"
+
+
+def test_answer_question_persists_question_history(tmp_path):
+    service = FilingService(data_dir=tmp_path)
+    summary = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example",
+        index_url="https://www.sec.gov/example-index",
+        local_path=str(tmp_path / "NVDA_000104581026000123.json"),
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text="Export controls and supply constraints may delay customer shipments.",
+                word_count=9,
+            )
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    service._persist(summary, "<html></html>")
+
+    service.answer_question("NVDA", "What could delay customer shipments?")
+
+    history = service.get_question_history("NVDA")
+    assert len(history) == 1
+    assert history[0].question == "What could delay customer shipments?"
+    assert history[0].citation_count == 1
+
+
+def test_external_embedding_provider_can_rank_without_lexical_overlap(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    service = FilingService()
+
+    embeddings_by_text = {
+        "How exposed is the company to geopolitical shipment disruption?": [1.0, 0.0, 0.0],
+        "Export controls and supply constraints may delay customer shipments.": [1.0, 0.0, 0.0],
+        "Revenue increased because data center demand grew.": [0.0, 1.0, 0.0],
+    }
+
+    def fake_embedding(text: str, model: str) -> list[float]:
+        return embeddings_by_text[text]
+
+    monkeypatch.setattr(service, "_request_openai_embedding", fake_embedding)
+    filing = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example",
+        index_url="https://www.sec.gov/example-index",
+        local_path="/tmp/NVDA_000104581026000123.json",
+        sections=[],
+        chunk_embeddings=[
+            FilingChunkEmbedding(
+                section_name="Risk Factors",
+                item="Item 1A",
+                chunk_index=0,
+                excerpt="Export controls and supply constraints may delay customer shipments.",
+                word_count=9,
+                embedding=[1.0, 0.0, 0.0],
+                embedding_method="openai-embedding",
+                embedding_model="text-embedding-3-small",
+            ),
+            FilingChunkEmbedding(
+                section_name="Management Discussion and Analysis",
+                item="Item 7",
+                chunk_index=0,
+                excerpt="Revenue increased because data center demand grew.",
+                word_count=7,
+                embedding=[0.0, 1.0, 0.0],
+                embedding_method="openai-embedding",
+                embedding_model="text-embedding-3-small",
+            ),
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+
+    citations = service._retrieve_citations(
+        filing,
+        "How exposed is the company to geopolitical shipment disruption?",
+    )
+
+    assert citations[0].section_name == "Risk Factors"
+    assert citations[0].retrieval_method == "openai-embedding"
+
+
+def test_llm_synthesis_is_gated_and_falls_back_by_default(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("ALPHALENS_LLM_SYNTHESIS", raising=False)
+    service = FilingService()
+    monkeypatch.setattr(
+        service,
+        "_request_cited_llm_answer",
+        lambda question, citations: "LLM answer [1]",
+    )
+
+    answer, method = service._synthesize_answer(
+        "What are the main risks?",
+        [
+            FilingCitation(
+                section_name="Risk Factors",
+                item="Item 1A",
+                chunk_index=0,
+                excerpt="Export controls may delay shipments.",
+                score=1.0,
+            )
+        ],
+    )
+
+    assert "Export controls may delay shipments" in answer
+    assert method == "extractive-cited-synthesis"
+
+
+def test_llm_synthesis_uses_provider_when_enabled(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ALPHALENS_LLM_SYNTHESIS", "1")
+    service = FilingService()
+    monkeypatch.setattr(
+        service,
+        "_request_cited_llm_answer",
+        lambda question, citations: "LLM answer [1]",
+    )
+
+    answer, method = service._synthesize_answer(
+        "What are the main risks?",
+        [
+            FilingCitation(
+                section_name="Risk Factors",
+                item="Item 1A",
+                chunk_index=0,
+                excerpt="Export controls may delay shipments.",
+                score=1.0,
+            )
+        ],
+    )
+
+    assert answer == "LLM answer [1]"
+    assert method == "openai-cited-synthesis"
+
+
+def test_compare_filings_returns_section_deltas_with_citations():
+    service = FilingService()
+    previous = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-25-000456",
+        form="10-K",
+        filing_date="2025-02-26",
+        report_date="2025-01-26",
+        primary_document="nvda-20250126.htm",
+        source_url="https://www.sec.gov/previous",
+        index_url="https://www.sec.gov/previous-index",
+        local_path="/tmp/NVDA_000104581025000456.json",
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text=(
+                    "Supply constraints may affect product availability. "
+                    "Competition and demand uncertainty may affect revenue."
+                ),
+                word_count=12,
+            )
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    latest = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/latest",
+        index_url="https://www.sec.gov/latest-index",
+        local_path="/tmp/NVDA_000104581026000123.json",
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text=(
+                    "Export controls and geopolitical restrictions may delay customer shipments. "
+                    "Supply constraints may affect product availability."
+                ),
+                word_count=13,
+            )
+        ],
+        ingested_at="2026-05-20T00:00:00+00:00",
+    )
+
+    comparison = service.compare_filings("NVDA", latest=latest, previous=previous)
+
+    assert comparison.ticker == "NVDA"
+    assert comparison.latest_accession_number == "0001045810-26-000123"
+    assert comparison.previous_accession_number == "0001045810-25-000456"
+    assert comparison.compared_sections[0].section_name == "Risk Factors"
+    assert "export" in comparison.compared_sections[0].added_terms
+    assert "competition" in comparison.compared_sections[0].removed_terms
+    assert {citation.filing_label for citation in comparison.compared_sections[0].citations} == {
+        "latest",
+        "previous",
+    }
+
+
+def test_compare_latest_ingested_filings_requires_two_filings(tmp_path):
+    service = FilingService(data_dir=tmp_path)
+    summary = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example",
+        index_url="https://www.sec.gov/example-index",
+        local_path=str(tmp_path / "NVDA_000104581026000123.json"),
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text="Export controls and supply constraints may delay customer shipments.",
+                word_count=9,
+            )
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    service._persist(summary, "<html></html>")
+
+    with pytest.raises(Exception, match="At least two ingested filings"):
+        service.compare_latest_ingested_filings("NVDA")
+
+
 @pytest.mark.asyncio
 async def test_fetch_latest_filing_record_picks_first_supported_form():
     class FakeResponse:
@@ -76,3 +431,44 @@ async def test_fetch_latest_filing_record_picks_first_supported_form():
     assert record["form"] == "10-Q"
     assert record["accession_number"] == "0001045810-26-000123"
     assert record["primary_document"] == "nvda-20260430.htm"
+
+
+@pytest.mark.asyncio
+async def test_fetch_supported_filing_record_uses_offset():
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {
+                "filings": {
+                    "recent": {
+                        "form": ["4", "10-Q", "8-K", "10-K"],
+                        "accessionNumber": [
+                            "0000000000-26-000001",
+                            "0001045810-26-000123",
+                            "0001045810-26-000999",
+                            "0001045810-25-000456",
+                        ],
+                        "filingDate": ["2026-01-01", "2026-05-01", "2026-04-01", "2025-02-26"],
+                        "reportDate": ["2026-01-01", "2026-04-30", "2026-03-31", "2025-01-26"],
+                        "primaryDocument": [
+                            "xslF345X05/doc4.xml",
+                            "nvda-20260430.htm",
+                            "nvda-8k.htm",
+                            "nvda-20250126.htm",
+                        ],
+                    }
+                }
+            }
+
+    class FakeClient:
+        async def get(self, url):
+            return FakeResponse()
+
+    service = FilingService()
+    record = await service._fetch_supported_filing_record(FakeClient(), "0001045810", offset=1)
+
+    assert record["form"] == "10-K"
+    assert record["accession_number"] == "0001045810-25-000456"
+    assert record["primary_document"] == "nvda-20250126.htm"
