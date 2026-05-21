@@ -42,14 +42,14 @@ export ALPHALENS_EMBEDDING_MODEL="text-embedding-3-small"
 
 Provider embeddings are generated during filing ingestion and persisted with each chunk. If a provider request fails, the backend falls back to local deterministic embeddings rather than blocking ingestion.
 
-LLM answer synthesis is intentionally off by default. Enable it explicitly:
+When `OPENAI_API_KEY` is set, LLM judgment is on by default for investor briefs (validated claim extraction) and Q&A synthesis. Disable explicitly:
 
 ~~~bash
-export ALPHALENS_LLM_SYNTHESIS=1
+export ALPHALENS_LLM_SYNTHESIS=0
 export ALPHALENS_LLM_MODEL="gpt-4.1-mini"
 ~~~
 
-When provider synthesis is disabled or unavailable, AlphaLens returns a deterministic structured answer with a direct response, cited claims, why-it-matters notes, confidence labels, limitations, and cited filing excerpts.
+Without a key, or when LLM judgment is disabled/unavailable, AlphaLens uses degraded deterministic mode for briefs and structured cited synthesis for Q&A.
 
 ## Run Locally
 

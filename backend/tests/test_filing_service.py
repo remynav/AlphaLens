@@ -282,7 +282,7 @@ def test_external_embedding_provider_can_rank_without_lexical_overlap(monkeypatc
 
 def test_llm_synthesis_is_gated_and_falls_back_by_default(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.delenv("ALPHALENS_LLM_SYNTHESIS", raising=False)
+    monkeypatch.setenv("ALPHALENS_LLM_SYNTHESIS", "0")
     service = FilingService()
     monkeypatch.setattr(
         service,
@@ -379,7 +379,7 @@ def test_generate_investor_brief_returns_structured_cited_points(tmp_path):
     brief = service.generate_investor_brief("NVDA")
 
     assert brief.ticker == "NVDA"
-    assert brief.synthesis_method == "deterministic-investor-brief"
+    assert brief.synthesis_method == "degraded-deterministic"
     assert brief.key_points
     assert brief.citations
     assert brief.thesis_cases.bull_case
@@ -391,8 +391,8 @@ def test_generate_investor_brief_returns_structured_cited_points(tmp_path):
     assert any(point.stance == "bull" for point in brief.key_points)
     if brief.red_flags:
         assert all(flag.headline for flag in brief.red_flags)
-    assert all(flag.evidence_excerpt or flag.implication for flag in brief.red_flags)
-    assert all(flag.severity in {"critical", "elevated"} for flag in brief.red_flags)
+        assert all(flag.evidence_excerpt or flag.implication for flag in brief.red_flags)
+        assert all(flag.severity in {"critical", "elevated"} for flag in brief.red_flags)
     assert any(signal.label == "Revenue" for signal in brief.kpi_signals)
     assert all(signal.value != "Qualitative signal" for signal in brief.kpi_signals)
     assert any(point.category == "Risk" for point in brief.key_points)
@@ -942,9 +942,24 @@ def test_investor_brief_includes_comparison_thesis_when_two_filings(tmp_path):
     assert any("period-over-period" in item.lower() for item in brief.limitations)
 
 
-def test_llm_investor_brief_uses_provider_when_enabled(monkeypatch, tmp_path):
+def test_llm_judgment_enabled_by_default_when_key_set(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "test-key")
-    monkeypatch.setenv("ALPHALENS_LLM_SYNTHESIS", "1")
+    monkeypatch.delenv("ALPHALENS_LLM_SYNTHESIS", raising=False)
+    service = FilingService()
+    assert service.llm_synthesis_enabled is True
+
+
+def test_llm_judgment_disabled_when_explicitly_off(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ALPHALENS_LLM_SYNTHESIS", "0")
+    service = FilingService()
+    assert service.llm_synthesis_enabled is False
+
+
+def test_llm_investor_brief_uses_validated_claims_path(monkeypatch, tmp_path):
+    from app.services.evidence_claims import EvidenceClaim
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
     service = FilingService(data_dir=tmp_path)
     summary = FilingSummary(
         ticker="NVDA",
@@ -970,19 +985,55 @@ def test_llm_investor_brief_uses_provider_when_enabled(monkeypatch, tmp_path):
     )
     service._persist(summary, "<html></html>")
 
-    monkeypatch.setattr(
-        service,
-        "_synthesize_investor_brief_llm",
-        lambda filing, citations, key_points, comparison: service._build_thesis_cases(
-            filing,
-            citations,
-            key_points,
-            service._kpi_signals(citations),
-            comparison,
-        ),
-    )
+    def fake_validated_brief(filing, citations, comparison, kpi_signals):
+        from app.services.filing_service import FilingInvestorBrief, FilingThesisCases, FilingThesisPoint
+
+        return FilingInvestorBrief(
+            ticker=filing.ticker,
+            company_name=filing.company_name,
+            accession_number=filing.accession_number,
+            filing_date=filing.filing_date,
+            brief="Validated snapshot",
+            thesis_cases=FilingThesisCases(
+                bull_case=[
+                    FilingThesisPoint(
+                        headline="Revenue grew 30%",
+                        evidence_excerpt="Revenue increased 30%",
+                        implication="Bull case",
+                        stance="bull",
+                        category="operating_driver",
+                        citation_index=1,
+                        confidence="high",
+                    )
+                ],
+                bear_case=[],
+                watch_for=[],
+            ),
+            red_flags=[],
+            kpi_signals=kpi_signals,
+            key_points=[],
+            watch_items=[],
+            open_questions=[],
+            validated_claims=[
+                EvidenceClaim(
+                    claim="Revenue increased 30%",
+                    evidence_citation=1,
+                    verbatim_span="Revenue increased 30%",
+                    claim_type="operating_driver",
+                    stance="bull",
+                    confidence="high",
+                ).model_dump()
+            ],
+            limitations=["Validated claims only."],
+            citations=citations,
+            synthesis_method="llm-validated-claims",
+            generated_at="2026-05-19T00:00:00+00:00",
+        )
+
+    monkeypatch.setattr(service, "_generate_brief_from_validated_claims", fake_validated_brief)
 
     brief = service.generate_investor_brief("NVDA")
 
-    assert brief.synthesis_method == "llm-investor-brief"
+    assert brief.synthesis_method == "llm-validated-claims"
+    assert brief.validated_claims
     assert brief.thesis_cases.bull_case[0].headline

@@ -260,8 +260,10 @@ class FilingInvestorBrief(BaseModel):
     red_flags: list[FilingRedFlag] = Field(default_factory=list)
     kpi_signals: list[FilingKpiSignal] = Field(default_factory=list)
     key_points: list[FilingBriefPoint]
-    watch_items: list[str]
-    limitations: list[str]
+    watch_items: list[str] = Field(default_factory=list)
+    open_questions: list[str] = Field(default_factory=list)
+    validated_claims: list[dict[str, Any]] = Field(default_factory=list)
+    limitations: list[str] = Field(default_factory=list)
     citations: list[FilingCitation]
     synthesis_method: str
     generated_at: str
@@ -327,7 +329,7 @@ class FilingService:
             bool(self.openai_api_key) and os.getenv("ALPHALENS_EXTERNAL_EMBEDDINGS", "1") != "0"
         )
         self.llm_synthesis_enabled = (
-            bool(self.openai_api_key) and os.getenv("ALPHALENS_LLM_SYNTHESIS", "0") == "1"
+            bool(self.openai_api_key) and os.getenv("ALPHALENS_LLM_SYNTHESIS", "1") != "0"
         )
 
     async def ingest_latest(self, ticker: str) -> FilingSummary:
@@ -497,36 +499,31 @@ class FilingService:
         if not citations:
             raise FilingIngestionError("No filing evidence was available to build an investor brief.")
 
+        kpi_signals = self._kpi_signals(citations)
+
+        if self.llm_synthesis_enabled:
+            assembled = self._generate_brief_from_validated_claims(
+                filing, citations, comparison, kpi_signals
+            )
+            if assembled is not None:
+                return assembled
+
         key_points = [
             self._brief_point(citation, index)
             for index, citation in enumerate(citations, start=1)
         ]
         brief = self._brief_summary(filing, key_points, comparison)
-        kpi_signals = self._kpi_signals(citations)
         watch_items = self._watch_items(key_points)
-
-        synthesis_method = "deterministic-investor-brief"
         thesis_cases = self._build_thesis_cases(
             filing, citations, key_points, kpi_signals, comparison
         )
         red_flags = self._red_flags(
             key_points, citations, comparison, thesis_cases.bear_case
         )
-        if self.llm_synthesis_enabled:
-            try:
-                llm_cases = self._synthesize_investor_brief_llm(
-                    filing, citations, key_points, comparison
-                )
-                if llm_cases and (
-                    llm_cases.bull_case or llm_cases.bear_case or llm_cases.watch_for
-                ):
-                    thesis_cases = llm_cases
-                    synthesis_method = "llm-investor-brief"
-            except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError):
-                pass
 
         limitations = [
             "Generated from the latest ingested 10-K/10-Q only.",
+            "Degraded deterministic mode: set OPENAI_API_KEY for validated claim extraction.",
             "Use the cited excerpts as the audit trail before relying on a point.",
         ]
         if comparison:
@@ -545,11 +542,69 @@ class FilingService:
             kpi_signals=kpi_signals,
             key_points=key_points,
             watch_items=watch_items,
+            open_questions=[],
+            validated_claims=[],
             limitations=limitations,
             citations=citations,
-            synthesis_method=synthesis_method,
+            synthesis_method="degraded-deterministic",
             generated_at=datetime.now(UTC).isoformat(),
         )
+
+    def _generate_brief_from_validated_claims(
+        self,
+        filing: FilingSummary,
+        citations: list[FilingCitation],
+        comparison: FilingComparison | None,
+        kpi_signals: list[FilingKpiSignal],
+    ) -> FilingInvestorBrief | None:
+        from app.services.evidence_claims import BriefAssembler, ClaimExtractor, ClaimValidator
+
+        try:
+            snapshot, raw_claims = ClaimExtractor(
+                api_key=str(self.openai_api_key),
+                base_url=self.openai_base_url,
+                model=self.llm_model,
+                timeout=self.timeout,
+            ).extract(filing, citations, comparison)
+            validated = ClaimValidator().validate_all(raw_claims, citations)
+            if not validated:
+                return None
+
+            assembled = BriefAssembler().assemble(
+                validated,
+                business_snapshot=snapshot,
+                filing=filing,
+                citations=citations,
+                comparison=comparison,
+                kpi_signals=kpi_signals,
+            )
+            limitations = [
+                "Generated from the latest ingested 10-K/10-Q only.",
+                "Use the cited excerpts as the audit trail before relying on a point.",
+            ]
+            limitations.extend(assembled.limitations)
+            watch_items = list(dict.fromkeys(assembled.watch_items + assembled.open_questions))
+
+            return FilingInvestorBrief(
+                ticker=filing.ticker,
+                company_name=filing.company_name,
+                accession_number=filing.accession_number,
+                filing_date=filing.filing_date,
+                brief=assembled.business_snapshot,
+                thesis_cases=assembled.thesis_cases,
+                red_flags=assembled.red_flags,
+                kpi_signals=kpi_signals,
+                key_points=assembled.key_points,
+                watch_items=watch_items[:5],
+                open_questions=assembled.open_questions,
+                validated_claims=[claim.model_dump() for claim in assembled.validated_claims],
+                limitations=limitations,
+                citations=citations,
+                synthesis_method="llm-validated-claims",
+                generated_at=datetime.now(UTC).isoformat(),
+            )
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
 
     def get_question_history(self, ticker: str, limit: int = 10) -> list[FilingQuestionHistoryEntry]:
         normalized = CompanyService()._normalize_ticker(ticker)

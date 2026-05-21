@@ -147,6 +147,8 @@ export type FilingInvestorBrief = {
   kpi_signals: FilingKpiSignal[];
   key_points: FilingBriefPoint[];
   watch_items: string[];
+  open_questions: string[];
+  validated_claims: Record<string, unknown>[];
   limitations: string[];
   citations: FilingCitation[];
   synthesis_method: string;
