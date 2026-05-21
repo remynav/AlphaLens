@@ -49,6 +49,38 @@ def test_extract_sections_returns_major_filing_sections():
     assert sections[1].item == "Item 1A"
 
 
+def test_extract_sections_handles_quarterly_filing_items():
+    service = FilingService()
+    filing_text = """
+    Item 1. Financial Statements
+    Condensed consolidated financial statements include revenue, cash, debt, and required notes.
+    This paragraph adds enough words for the financial statement section to be retained by the parser.
+    Item 2. Management's Discussion and Analysis
+    Revenue increased 30% because data center demand grew across customers and product margins improved.
+    This paragraph adds enough words for the quarterly MD&A section to be retained by the parser.
+    Item 3. Quantitative and Qualitative Disclosures About Market Risk
+    Interest rate and currency exposures are discussed here with enough words for a boundary.
+    Item 4. Controls and Procedures
+    Disclosure controls and procedures were effective as of the end of the period.
+    This paragraph adds enough words for the controls section to be retained by the parser.
+    Part II
+    Item 1A. Risk Factors
+    Export controls and supply constraints may delay customer shipments.
+    This paragraph adds enough words for the risk section to be retained by the parser.
+    Item 2. Unregistered Sales of Equity Securities
+    None.
+    """
+
+    sections = service._extract_sections(filing_text)
+
+    assert [(section.item, section.name) for section in sections] == [
+        ("Item 1", "Financial Statements"),
+        ("Item 2", "Management Discussion and Analysis"),
+        ("Item 4", "Controls and Procedures"),
+        ("Item 1A", "Risk Factors"),
+    ]
+
+
 def test_extract_sections_trims_executive_officer_text_from_risk_factors():
     service = FilingService()
     filing_text = """
@@ -357,6 +389,7 @@ def test_generate_investor_brief_returns_structured_cited_points(tmp_path):
     assert any(signal.label == "Revenue" for signal in brief.kpi_signals)
     assert all(signal.value != "Qualitative signal" for signal in brief.kpi_signals)
     assert any(point.category == "Risk" for point in brief.key_points)
+    assert any("Regulatory constraints" in point.detail for point in brief.key_points)
     assert "filing readout" in brief.brief.lower()
 
 
@@ -376,7 +409,8 @@ def test_structured_answer_returns_claims_with_reasoning():
         ],
     )
 
-    assert "strongest cited risk signal" in answer.lower()
+    assert "filing-supported risk answer" in answer.lower()
+    assert "regulatory constraints" in answer.lower()
     assert evidence_points[0].claim
     assert evidence_points[0].why_it_matters
     assert evidence_points[0].confidence in {"low", "medium", "high"}
@@ -408,6 +442,44 @@ def test_kpi_signals_require_numeric_context():
     assert len(signals) == 1
     assert signals[0].label == "Revenue"
     assert signals[0].value == "30%"
+
+
+def test_kpi_signals_ignore_legal_item_numbers_without_financial_metric():
+    service = FilingService()
+    citations = [
+        FilingCitation(
+            section_name="Risk Factors",
+            item="Item 1A",
+            chunk_index=0,
+            excerpt=(
+                "See Item 1A for risks related to regulatory compliance. "
+                "The company may incur cash costs from time to time."
+            ),
+            score=1.0,
+        )
+    ]
+
+    assert service._kpi_signals(citations) == []
+
+
+def test_operating_answer_uses_question_specific_language():
+    service = FilingService()
+
+    answer, _, _, _ = service._synthesize_answer(
+        "Why did revenue increase?",
+        [
+            FilingCitation(
+                section_name="Management Discussion and Analysis",
+                item="Item 7",
+                chunk_index=0,
+                excerpt="Revenue increased 30% because data center demand grew across customers.",
+                score=1.0,
+            )
+        ],
+    )
+
+    assert "filing-supported operating answer" in answer.lower()
+    assert "track this against reported revenue" in answer.lower()
 
 
 def test_compare_filings_returns_section_deltas_with_citations():
