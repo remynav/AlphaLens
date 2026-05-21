@@ -207,6 +207,21 @@ class FilingBriefPoint(BaseModel):
     headline: str
     detail: str
     citation_index: int
+    stance: str = "neutral"
+    evidence_excerpt: str = ""
+    implication: str = ""
+    confidence: str = "low"
+
+
+class FilingThesisPoint(BaseModel):
+    headline: str
+    evidence_excerpt: str
+    implication: str
+    falsifier: str = ""
+    stance: str
+    category: str
+    citation_index: int
+    confidence: str = "low"
 
 
 class FilingKpiSignal(BaseModel):
@@ -217,9 +232,22 @@ class FilingKpiSignal(BaseModel):
 
 
 class FilingThesisCases(BaseModel):
-    bull_case: list[str] = Field(default_factory=list)
-    bear_case: list[str] = Field(default_factory=list)
-    watch_for: list[str] = Field(default_factory=list)
+    bull_case: list[FilingThesisPoint] = Field(default_factory=list)
+    bear_case: list[FilingThesisPoint] = Field(default_factory=list)
+    watch_for: list[FilingThesisPoint] = Field(default_factory=list)
+
+
+class FilingRedFlag(BaseModel):
+    headline: str
+    category_label: str
+    evidence_excerpt: str
+    implication: str
+    severity: str
+    citation_index: int
+    confidence: str = "low"
+    is_new_since_prior_filing: bool = False
+    also_in_bear_case: bool = False
+    category: str = ""
 
 
 class FilingInvestorBrief(BaseModel):
@@ -229,7 +257,7 @@ class FilingInvestorBrief(BaseModel):
     filing_date: str
     brief: str
     thesis_cases: FilingThesisCases = Field(default_factory=FilingThesisCases)
-    red_flags: list[FilingBriefPoint] = Field(default_factory=list)
+    red_flags: list[FilingRedFlag] = Field(default_factory=list)
     kpi_signals: list[FilingKpiSignal] = Field(default_factory=list)
     key_points: list[FilingBriefPoint]
     watch_items: list[str]
@@ -457,6 +485,14 @@ class FilingService:
         if not filing.chunk_embeddings:
             filing.chunk_embeddings = self._build_chunk_embeddings(filing.sections)
 
+        comparison: FilingComparison | None = None
+        ingested = self.get_ingested_filings(ticker, limit=2)
+        if len(ingested) >= 2:
+            try:
+                comparison = self.compare_filings(ticker, latest=ingested[0], previous=ingested[1])
+            except FilingIngestionError:
+                comparison = None
+
         citations = self._investor_brief_citations(filing)
         if not citations:
             raise FilingIngestionError("No filing evidence was available to build an investor brief.")
@@ -465,11 +501,38 @@ class FilingService:
             self._brief_point(citation, index)
             for index, citation in enumerate(citations, start=1)
         ]
-        brief = self._brief_summary(filing, key_points)
-        thesis_cases = self._thesis_cases(key_points)
-        red_flags = self._red_flags(key_points)
+        brief = self._brief_summary(filing, key_points, comparison)
         kpi_signals = self._kpi_signals(citations)
         watch_items = self._watch_items(key_points)
+
+        synthesis_method = "deterministic-investor-brief"
+        thesis_cases = self._build_thesis_cases(
+            filing, citations, key_points, kpi_signals, comparison
+        )
+        red_flags = self._red_flags(
+            key_points, citations, comparison, thesis_cases.bear_case
+        )
+        if self.llm_synthesis_enabled:
+            try:
+                llm_cases = self._synthesize_investor_brief_llm(
+                    filing, citations, key_points, comparison
+                )
+                if llm_cases and (
+                    llm_cases.bull_case or llm_cases.bear_case or llm_cases.watch_for
+                ):
+                    thesis_cases = llm_cases
+                    synthesis_method = "llm-investor-brief"
+            except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                pass
+
+        limitations = [
+            "Generated from the latest ingested 10-K/10-Q only.",
+            "Use the cited excerpts as the audit trail before relying on a point.",
+        ]
+        if comparison:
+            limitations.append(
+                "Thesis and red flags include period-over-period section deltas when two filings are ingested."
+            )
 
         return FilingInvestorBrief(
             ticker=filing.ticker,
@@ -482,12 +545,9 @@ class FilingService:
             kpi_signals=kpi_signals,
             key_points=key_points,
             watch_items=watch_items,
-            limitations=[
-                "Generated from the latest ingested 10-K/10-Q only.",
-                "Use the cited excerpts as the audit trail before relying on a point.",
-            ],
+            limitations=limitations,
             citations=citations,
-            synthesis_method="deterministic-investor-brief",
+            synthesis_method=synthesis_method,
             generated_at=datetime.now(UTC).isoformat(),
         )
 
@@ -1069,47 +1129,193 @@ class FilingService:
         return "general"
 
     def _investor_brief_citations(self, filing: FilingSummary) -> list[FilingCitation]:
-        candidates: list[tuple[float, FilingCitation]] = []
-        seen: set[tuple[str, int]] = set()
-        prompts = [
-            "revenue growth demand margin operating income sales customer segment product services data center",
-            "material specific risks export controls supply constraints competition regulation cybersecurity litigation customer demand",
-            "cash liquidity debt capital financing repurchase dividend credit facility material weakness controls procedures",
+        pools: list[tuple[str, str, int]] = [
+            (
+                "bull",
+                "revenue growth demand margin operating income sales customer segment product services data center improved increased",
+                3,
+            ),
+            (
+                "bear",
+                "export controls supply constraints delay litigation cybersecurity material weakness adversely affect competition regulation",
+                3,
+            ),
+            (
+                "watch",
+                "cash liquidity debt capital financing repurchase dividend credit facility guidance outlook catalyst segment disclosure",
+                2,
+            ),
+            (
+                "redflag",
+                "material weakness litigation export control cybersecurity specific adverse quantified disclosure control internal control",
+                2,
+            ),
         ]
-        for prompt in prompts:
+        selected: list[FilingCitation] = []
+        seen: set[tuple[str, int]] = set()
+        seen_topics: set[str] = set()
+
+        for pool, prompt, limit in pools:
+            pool_count = 0
+            candidates: list[tuple[float, FilingCitation]] = []
             for citation in self._retrieve_citations(filing, prompt):
                 key = (citation.item, citation.chunk_index)
-                if (
-                    key in seen
-                    or self._is_boilerplate_excerpt(citation.excerpt)
-                    or self._evidence_quality_score(citation.excerpt) < 0.8
-                ):
+                if key in seen:
                     continue
-                seen.add(key)
-                candidates.append((self._evidence_quality_score(citation.excerpt), citation))
+                if self._is_boilerplate_excerpt(citation.excerpt):
+                    continue
+                if pool in {"bear", "redflag"} and not self._is_risk_specific_enough(citation):
+                    continue
+                quality = self._evidence_quality_score(citation.excerpt)
+                if quality < 0.85 and pool not in {"watch", "redflag"}:
+                    continue
+                if pool == "redflag" and quality < 0.9:
+                    continue
+                topic_key = self._topic_key(citation)
+                if topic_key in seen_topics:
+                    continue
+                score = self._brief_citation_score(citation, pool, quality)
+                candidates.append((score, citation))
 
-        selected: list[FilingCitation] = []
-        category_counts: dict[str, int] = {}
-        for _, citation in sorted(candidates, key=lambda entry: entry[0], reverse=True):
-            category = self._classify_investor_category(citation)
-            if category_counts.get(category, 0) >= 2:
-                continue
-            selected.append(citation)
-            category_counts[category] = category_counts.get(category, 0) + 1
-            if len(selected) >= 6:
-                break
+            for _, citation in sorted(candidates, key=lambda entry: entry[0], reverse=True):
+                if pool_count >= limit:
+                    break
+                topic_key = self._topic_key(citation)
+                if topic_key in seen_topics:
+                    continue
+                seen.add((citation.item, citation.chunk_index))
+                seen_topics.add(topic_key)
+                selected.append(citation)
+                pool_count += 1
+
         return selected
+
+    def _brief_citation_score(self, citation: FilingCitation, pool: str, quality: float) -> float:
+        score = quality
+        section = citation.section_name.lower()
+        item = citation.item.lower()
+        if "item 7" in item or "management" in section or "discussion" in section:
+            score *= 1.35
+        if "item 1" in item and "1a" not in item:
+            score *= 1.15
+        if "item 1a" in item or "risk factor" in section:
+            if self._is_risk_specific_enough(citation):
+                score *= 1.1
+            else:
+                score *= 0.45
+        stance = self._classify_stance(citation)
+        if pool == stance:
+            score *= 1.25
+        elif pool == "bull" and stance == "bear":
+            score *= 0.55
+        elif pool == "bear" and stance == "bull":
+            score *= 0.55
+        if pool == "redflag":
+            if self._is_risk_specific_enough(citation) or "weakness" in citation.excerpt.lower():
+                score *= 1.3
+            else:
+                score *= 0.4
+        return score
+
+    def _topic_key(self, citation: FilingCitation) -> str:
+        category = self._classify_investor_category(citation)
+        subjects = self._specific_subjects(citation.excerpt, category)
+        if subjects:
+            return category + ":" + subjects[0]
+        return category + ":" + citation.item
+
+    def _is_risk_specific_enough(self, citation: FilingCitation) -> bool:
+        if "risk" not in citation.section_name.lower() and "item 1a" not in citation.item.lower():
+            return True
+        text = citation.excerpt.lower()
+        if self._is_boilerplate_excerpt(text):
+            return False
+        specific_terms = [
+            "export control",
+            "export",
+            "geopolitical",
+            "litigation",
+            "cybersecurity",
+            "supply",
+            "constraint",
+            "delay",
+            "material weakness",
+            "tariff",
+            "sanction",
+            "customer",
+            "segment",
+        ]
+        if any(term in text for term in specific_terms):
+            return True
+        if re.search(r"(\$\s?\d|\d+(?:\.\d+)?\s?%)", text):
+            return True
+        return self._evidence_quality_score(text) >= 1.05
+
+    def _classify_stance(self, citation: FilingCitation) -> str:
+        lowered = citation.excerpt.lower()
+        category = self._classify_investor_category(citation)
+        bear_terms = [
+            "adversely affect",
+            "may adversely",
+            "could adversely",
+            "decreased",
+            "declined",
+            "lower",
+            "weakness",
+            "constraint",
+            "delay",
+            "litigation",
+            "export control",
+            "material weakness",
+            "volatility",
+            "uncertain",
+        ]
+        bull_terms = [
+            "increased",
+            "grew",
+            "growth",
+            "improved",
+            "higher",
+            "stronger",
+            "expanded",
+            "record",
+        ]
+        bear_score = sum(1 for term in bear_terms if term in lowered)
+        bull_score = sum(1 for term in bull_terms if term in lowered)
+        if category == "Controls" and any(term in lowered for term in ["weakness", "deficien"]):
+            return "bear"
+        if category == "Risk" and bear_score >= bull_score:
+            return "bear"
+        if category == "Business Driver" and bull_score > bear_score:
+            return "bull"
+        if category == "Liquidity" and bull_score >= bear_score and "repurchase" in lowered:
+            return "bull"
+        if bull_score > bear_score + 1:
+            return "bull"
+        if bear_score > bull_score + 1:
+            return "bear"
+        if category in {"Risk", "Controls"}:
+            return "bear"
+        if category == "Business Driver":
+            return "bull"
+        return "watch"
 
     def _brief_point(self, citation: FilingCitation, citation_index: int) -> FilingBriefPoint:
         category = self._classify_investor_category(citation)
         sentence = self._investor_detail(citation)
+        stance = self._classify_stance(citation)
         claim = self._claim_from_sentence(category, sentence).rstrip(".")
-        why_it_matters = self._why_it_matters(category, sentence)
+        implication = self._thesis_implication(category, sentence, stance)
+        evidence = self._excerpt(sentence, 220)
         return FilingBriefPoint(
             category=category,
-            headline=self._headline_for_citation(citation),
-            detail=claim + ". " + why_it_matters,
+            headline=self._thesis_headline(citation, sentence, stance),
+            detail=claim + ". " + implication,
             citation_index=citation_index,
+            stance=stance,
+            evidence_excerpt=evidence,
+            implication=implication,
+            confidence=self._claim_confidence(sentence),
         )
 
     def _classify_investor_category(self, citation: FilingCitation) -> str:
@@ -1158,20 +1364,28 @@ class FilingService:
         sentence = self._best_sentence(citation.excerpt, self._category_terms(citation))
         return self._excerpt(sentence, 300)
 
-    def _brief_summary(self, filing: FilingSummary, key_points: list[FilingBriefPoint]) -> str:
+    def _brief_summary(
+        self,
+        filing: FilingSummary,
+        key_points: list[FilingBriefPoint],
+        comparison: FilingComparison | None = None,
+    ) -> str:
         if not key_points:
             return filing.company_name + " has no investor brief points from the latest filing evidence."
-        categories = []
+        stances = []
         for point in key_points:
-            if point.category not in categories:
-                categories.append(point.category)
-        focus = ", ".join(category.lower() for category in categories[:3])
-        return (
+            if point.stance not in stances:
+                stances.append(point.stance)
+        focus = ", ".join(stance for stance in stances[:3])
+        summary = (
             filing.company_name
-            + "'s latest filing readout highlights "
+            + "'s latest filing readout organizes "
             + focus
-            + " signals from the strongest cited excerpts. Treat each point as a source-grounded claim to verify, not a valuation conclusion."
+            + " signals from the strongest cited excerpts. Treat each thesis point as a source-grounded claim to verify, not a valuation conclusion."
         )
+        if comparison:
+            summary += " " + comparison.overall_change_summary
+        return summary
 
     def _watch_items(self, key_points: list[FilingBriefPoint]) -> list[str]:
         items: list[str] = []
@@ -1188,49 +1402,585 @@ class FilingService:
                 break
         return items or ["Review cited filing evidence against future filings and reported results."]
 
-    def _thesis_cases(self, key_points: list[FilingBriefPoint]) -> FilingThesisCases:
-        bull_case: list[str] = []
-        bear_case: list[str] = []
-        watch_for: list[str] = []
+    def _build_thesis_cases(
+        self,
+        filing: FilingSummary,
+        citations: list[FilingCitation],
+        key_points: list[FilingBriefPoint],
+        kpi_signals: list[FilingKpiSignal],
+        comparison: FilingComparison | None,
+    ) -> FilingThesisCases:
+        thesis_by_citation: dict[int, FilingThesisPoint] = {}
+        kpi_by_index = {signal.citation_index: signal for signal in kpi_signals}
+
         for point in key_points:
-            if point.category == "Business Driver":
-                bull_case.append(point.detail)
-            elif point.category == "Risk":
-                bear_case.append(point.detail)
-            elif point.category == "Liquidity":
-                watch_for.append("Balance sheet: " + point.detail)
-            elif point.category == "Controls":
-                watch_for.append("Governance: " + point.detail)
+            citation = citations[point.citation_index - 1]
+            metric = kpi_by_index.get(point.citation_index)
+            thesis_by_citation[point.citation_index] = self._thesis_point_from_brief(
+                citation, point, metric
+            )
+
+        comparison_points = self._comparison_thesis_points(comparison, citations)
+        falsifier_points = self._falsifier_points(key_points, citations, comparison)
+
+        bull_case = [
+            point
+            for point in thesis_by_citation.values()
+            if point.stance == "bull"
+        ]
+        bear_case = [
+            point
+            for point in thesis_by_citation.values()
+            if point.stance == "bear"
+        ]
+        for point in comparison_points:
+            if point.stance == "bull" and len(bull_case) < 3:
+                bull_case.append(point)
+            elif point.stance == "bear" and len(bear_case) < 3:
+                bear_case.append(point)
+
+        bull_case = bull_case[:3]
+        bear_case = bear_case[:3]
+        watch_for = falsifier_points[:2]
+
         if not bull_case:
-            bull_case.append("No source-grounded bull case was strong enough to summarize from the retrieved filing evidence.")
+            bull_case.append(self._empty_thesis_point("bull", filing))
         if not bear_case:
-            bear_case.append("No specific bear case was strong enough to summarize from the retrieved filing evidence.")
+            bear_case.append(self._empty_thesis_point("bear", filing))
         if not watch_for:
-            watch_for.append("Compare these claims against the next filing and reported financial results.")
+            watch_for.append(self._empty_thesis_point("watch", filing))
+
         return FilingThesisCases(
-            bull_case=bull_case[:3],
-            bear_case=bear_case[:3],
-            watch_for=watch_for[:2],
+            bull_case=bull_case,
+            bear_case=bear_case,
+            watch_for=watch_for,
         )
 
-    def _red_flags(self, key_points: list[FilingBriefPoint]) -> list[FilingBriefPoint]:
-        flagged: list[FilingBriefPoint] = []
-        for point in key_points:
-            if not self._is_specific_red_flag(point):
+    def _thesis_point_from_brief(
+        self,
+        citation: FilingCitation,
+        point: FilingBriefPoint,
+        metric: FilingKpiSignal | None,
+    ) -> FilingThesisPoint:
+        headline = point.headline
+        implication = point.implication
+        if metric:
+            headline = metric.label + " " + metric.value + ": " + headline
+            implication = (
+                metric.value
+                + " cited in "
+                + citation.item
+                + ". "
+                + implication
+            )
+        return FilingThesisPoint(
+            headline=headline,
+            evidence_excerpt=point.evidence_excerpt or self._excerpt(citation.excerpt, 220),
+            implication=implication,
+            falsifier="",
+            stance=point.stance,
+            category=point.category,
+            citation_index=point.citation_index,
+            confidence=point.confidence,
+        )
+
+    def _thesis_headline(self, citation: FilingCitation, sentence: str, stance: str) -> str:
+        category = self._classify_investor_category(citation)
+        subjects = self._specific_subjects(sentence, category)
+        if subjects:
+            subject_text = ", ".join(self._display_search_term(term) for term in subjects[:2])
+            if stance == "bull":
+                return subject_text + " supports operating momentum"
+            if stance == "bear":
+                return subject_text + " poses a cited downside risk"
+            return "Monitor " + subject_text + " in the next filing"
+        return self._headline_for_citation(citation)
+
+    def _thesis_implication(self, category: str, sentence: str, stance: str) -> str:
+        subjects = self._specific_subjects(sentence, category)
+        topic = ", ".join(self._display_search_term(term) for term in subjects[:2]) or category.lower()
+        metric = self._kpi_metric_for_sentence(sentence)
+        metric_text = metric[1] if metric else ""
+        if stance == "bull":
+            if metric_text:
+                return (
+                    metric_text
+                    + " supports the bull case if "
+                    + topic
+                    + " holds in the next reported quarter."
+                )
+            return (
+                "Supports the bull case if "
+                + topic
+                + " shows up in revenue, margin, or segment disclosure next quarter."
+            )
+        if stance == "bear":
+            if metric_text:
+                return (
+                    "Bear case strengthens if "
+                    + topic
+                    + " worsens alongside "
+                    + metric_text
+                    + " in reported results."
+                )
+            return (
+                "Bear case strengthens if "
+                + topic
+                + " becomes more specific, repeated, or quantified in the next filing."
+            )
+        return (
+            "Reassess the thesis if "
+            + topic
+            + " language or reported metrics diverge from this excerpt."
+        )
+
+    def _comparison_thesis_points(
+        self,
+        comparison: FilingComparison | None,
+        citations: list[FilingCitation],
+    ) -> list[FilingThesisPoint]:
+        if not comparison:
+            return []
+
+        points: list[FilingThesisPoint] = []
+        for section in comparison.compared_sections:
+            if abs(section.word_count_delta) < 25 and not section.added_terms:
                 continue
-            flagged.append(
-                FilingBriefPoint(
-                    category=point.category,
-                    headline=self._red_flag_headline(point),
-                    detail=point.detail,
-                    citation_index=point.citation_index,
+            stance = "bull"
+            if section.item == "Item 1A" or any(
+                term.lower() in {"risk", "litigation", "export", "weakness", "constraint"}
+                for term in section.added_terms
+            ):
+                stance = "bear"
+            emphasis = ", ".join(section.added_terms[:3]) if section.added_terms else section.item
+            citation_index = self._citation_index_for_item(citations, section.item) or 1
+            headline = (
+                section.item
+                + " discussion "
+                + ("expanded" if section.word_count_delta > 0 else "contracted")
+                + f" ({section.word_count_delta:+,} words vs prior filing)"
+            )
+            points.append(
+                FilingThesisPoint(
+                    headline=headline,
+                    evidence_excerpt=section.summary,
+                    implication=(
+                        "Newer emphasis on "
+                        + emphasis
+                        + " may shift the "
+                        + stance
+                        + " case if it persists in the next filing."
+                    ),
+                    falsifier="",
+                    stance=stance,
+                    category="Filing Comparison",
+                    citation_index=citation_index,
+                    confidence="medium",
                 )
             )
-            if len(flagged) >= 4:
+            if len(points) >= 2:
                 break
-        return flagged
+        return points
 
-    def _red_flag_headline(self, point: FilingBriefPoint) -> str:
+    def _citation_index_for_item(
+        self, citations: list[FilingCitation], item: str
+    ) -> int | None:
+        for index, citation in enumerate(citations, start=1):
+            if citation.item == item:
+                return index
+        return None
+
+    def _falsifier_points(
+        self,
+        key_points: list[FilingBriefPoint],
+        citations: list[FilingCitation],
+        comparison: FilingComparison | None,
+    ) -> list[FilingThesisPoint]:
+        points: list[FilingThesisPoint] = []
+        for point in key_points[:4]:
+            category = point.category
+            subjects = self._specific_subjects(point.evidence_excerpt or point.detail, category)
+            topic = ", ".join(self._display_search_term(term) for term in subjects[:2]) or category.lower()
+            citation = citations[point.citation_index - 1]
+            if point.stance == "bull":
+                falsifier = (
+                    "If "
+                    + topic
+                    + " decelerates or margins compress in the next filing versus this excerpt, the bull case weakens."
+                )
+            elif point.stance == "bear":
+                falsifier = (
+                    "If "
+                    + topic
+                    + " risk language softens or is absent from segment results next quarter, the bear case weakens."
+                )
+            else:
+                falsifier = (
+                    "If "
+                    + topic
+                    + " is unchanged in the next filing and reported metrics are stable, keep the view neutral."
+                )
+            points.append(
+                FilingThesisPoint(
+                    headline="Falsifier: " + topic,
+                    evidence_excerpt=point.evidence_excerpt or self._excerpt(citation.excerpt, 180),
+                    implication="Use this as a measurable check against the cited filing language.",
+                    falsifier=falsifier,
+                    stance="watch",
+                    category=category,
+                    citation_index=point.citation_index,
+                    confidence=point.confidence,
+                )
+            )
+
+        if comparison:
+            for section in comparison.compared_sections:
+                if section.item != "Item 1A" or not section.added_terms:
+                    continue
+                term = section.added_terms[0]
+                citation_index = self._citation_index_for_item(citations, section.item) or 1
+                points.append(
+                    FilingThesisPoint(
+                        headline="Falsifier: new " + term + " risk emphasis",
+                        evidence_excerpt=section.summary,
+                        implication="Period-over-period risk language change from the prior filing.",
+                        falsifier=(
+                            "If "
+                            + term
+                            + " risk language is not repeated or quantified in the next filing, reduce bear-case weight."
+                        ),
+                        stance="watch",
+                        category="Filing Comparison",
+                        citation_index=citation_index,
+                        confidence="medium",
+                    )
+                )
+                break
+
+        if not points:
+            points.append(self._empty_thesis_point("watch", None))
+        return points
+
+    def _empty_thesis_point(self, stance: str, filing: FilingSummary | None) -> FilingThesisPoint:
+        company = filing.company_name if filing else "This company"
+        if stance == "bull":
+            return FilingThesisPoint(
+                headline="Insufficient specific bull evidence",
+                evidence_excerpt="",
+                implication=(
+                    company
+                    + " lacked a strong, company-specific operating excerpt in the retrieved evidence. Review Item 7 and segment disclosure."
+                ),
+                falsifier="",
+                stance="bull",
+                category="Evidence gap",
+                citation_index=0,
+                confidence="low",
+            )
+        if stance == "bear":
+            return FilingThesisPoint(
+                headline="Insufficient specific bear evidence",
+                evidence_excerpt="",
+                implication=(
+                    "No filing-grounded downside excerpt cleared specificity filters. Review Item 1A for named risks, not boilerplate."
+                ),
+                falsifier="",
+                stance="bear",
+                category="Evidence gap",
+                citation_index=0,
+                confidence="low",
+            )
+        return FilingThesisPoint(
+            headline="Default falsifier checks",
+            evidence_excerpt="",
+            implication="Compare thesis bullets against the next filing and reported financial results.",
+            falsifier=(
+                "If cited drivers and risks do not show up in the next 10-Q/10-K or earnings metrics, revise the thesis."
+            ),
+            stance="watch",
+            category="Evidence gap",
+            citation_index=0,
+            confidence="low",
+        )
+
+    def _synthesize_investor_brief_llm(
+        self,
+        filing: FilingSummary,
+        citations: list[FilingCitation],
+        key_points: list[FilingBriefPoint],
+        comparison: FilingComparison | None,
+    ) -> FilingThesisCases | None:
+        evidence = "\n\n".join(
+            f"[{index}] {citation.item}: {citation.section_name}\n{citation.excerpt}"
+            for index, citation in enumerate(citations, start=1)
+        )
+        compare_context = comparison.overall_change_summary if comparison else "No prior filing comparison available."
+        points_context = "\n".join(
+            f"[{point.citation_index}] {point.stance}/{point.category}: {point.headline} — {point.evidence_excerpt}"
+            for point in key_points
+        )
+        response = httpx.post(
+            self.openai_base_url + "/chat/completions",
+            headers={
+                "Authorization": "Bearer " + str(self.openai_api_key),
+                "Content-Type": "application/json",
+            },
+            json={
+                "model": self.llm_model,
+                "temperature": 0.1,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You write investor thesis bullets using only supplied SEC filing evidence. "
+                            "Return JSON with keys bull_case, bear_case, watch_for. Each value is an array of "
+                            "objects with headline, evidence_excerpt, implication, falsifier (watch_for only), "
+                            "stance, category, citation_index (integer from evidence brackets), confidence "
+                            "(low|medium|high). Max 3 bull, 3 bear, 2 watch. No uncited facts."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "Company: "
+                            + filing.company_name
+                            + "\nComparison: "
+                            + compare_context
+                            + "\nDraft points:\n"
+                            + points_context
+                            + "\n\nEvidence:\n"
+                            + evidence
+                        ),
+                    },
+                ],
+            },
+            timeout=self.timeout,
+        )
+        response.raise_for_status()
+        payload = json.loads(str(response.json()["choices"][0]["message"]["content"]))
+        return FilingThesisCases(
+            bull_case=self._parse_llm_thesis_points(payload.get("bull_case", []), "bull"),
+            bear_case=self._parse_llm_thesis_points(payload.get("bear_case", []), "bear"),
+            watch_for=self._parse_llm_thesis_points(payload.get("watch_for", []), "watch"),
+        )
+
+    def _parse_llm_thesis_points(self, raw_points: list[Any], stance: str) -> list[FilingThesisPoint]:
+        parsed: list[FilingThesisPoint] = []
+        for entry in raw_points:
+            if not isinstance(entry, dict):
+                continue
+            citation_index = int(entry.get("citation_index", 0) or 0)
+            parsed.append(
+                FilingThesisPoint(
+                    headline=str(entry.get("headline", "")).strip() or "Thesis point",
+                    evidence_excerpt=str(entry.get("evidence_excerpt", "")).strip(),
+                    implication=str(entry.get("implication", "")).strip(),
+                    falsifier=str(entry.get("falsifier", "")).strip(),
+                    stance=str(entry.get("stance", stance)).strip() or stance,
+                    category=str(entry.get("category", "LLM synthesis")).strip(),
+                    citation_index=citation_index,
+                    confidence=str(entry.get("confidence", "medium")).strip() or "medium",
+                )
+            )
+        return parsed
+
+    def _red_flags(
+        self,
+        key_points: list[FilingBriefPoint],
+        citations: list[FilingCitation],
+        comparison: FilingComparison | None,
+        bear_thesis: list[FilingThesisPoint],
+    ) -> list[FilingRedFlag]:
+        bear_citation_indices = {
+            point.citation_index for point in bear_thesis if point.citation_index > 0
+        }
+        candidates: list[tuple[float, FilingRedFlag]] = []
+        seen_keys: set[str] = set()
+
+        for point in key_points:
+            if not self._qualifies_as_red_flag(point):
+                continue
+            topic_key = self._red_flag_topic_key(point)
+            if topic_key in seen_keys:
+                continue
+            is_new = self._red_flag_is_new_in_compare(point, comparison)
+            severity = self._red_flag_severity(point)
+            also_in_bear = point.citation_index in bear_citation_indices
+            if also_in_bear and severity != "critical" and not is_new:
+                continue
+
+            citation = (
+                citations[point.citation_index - 1]
+                if 0 < point.citation_index <= len(citations)
+                else None
+            )
+            evidence = point.evidence_excerpt or (
+                self._excerpt(citation.excerpt, 220) if citation else ""
+            )
+            implication = point.implication or (
+                self._thesis_implication(point.category, evidence, "bear")
+                if evidence
+                else "Review cited filing language before relying on this readout."
+            )
+            rank = self._red_flag_rank_score(point, is_new, severity)
+            candidates.append(
+                (
+                    rank,
+                    FilingRedFlag(
+                        headline=point.headline,
+                        category_label=self._red_flag_category_label(point),
+                        evidence_excerpt=evidence,
+                        implication=implication,
+                        severity=severity,
+                        citation_index=point.citation_index,
+                        confidence=point.confidence,
+                        is_new_since_prior_filing=is_new,
+                        also_in_bear_case=also_in_bear,
+                        category=point.category,
+                    ),
+                )
+            )
+            seen_keys.add(topic_key)
+
+        for flag in self._comparison_red_flags(comparison, citations):
+            topic_key = "compare:" + flag.headline.lower()
+            if topic_key in seen_keys:
+                continue
+            seen_keys.add(topic_key)
+            rank = 4.0 if flag.is_new_since_prior_filing else 3.0
+            if flag.severity == "critical":
+                rank += 2.0
+            candidates.append((rank, flag))
+
+        candidates.sort(key=lambda entry: entry[0], reverse=True)
+        return [flag for _, flag in candidates[:4]]
+
+    def _qualifies_as_red_flag(self, point: FilingBriefPoint) -> bool:
+        text = (point.headline + " " + point.detail).lower()
+        if any(
+            term in text
+            for term in ["material weakness", "disclosure control", "internal control"]
+        ):
+            return True
+        if point.stance != "bear":
+            return False
+        return self._is_specific_red_flag(point)
+
+    def _red_flag_topic_key(self, point: FilingBriefPoint) -> str:
+        subjects = self._specific_subjects(
+            point.evidence_excerpt or point.detail, point.category
+        )
+        if subjects:
+            return point.category + ":" + subjects[0]
+        return point.category + ":" + str(point.citation_index)
+
+    def _red_flag_severity(self, point: FilingBriefPoint) -> str:
+        text = (point.headline + " " + point.detail).lower()
+        if any(
+            term in text
+            for term in ["material weakness", "disclosure control", "internal control"]
+        ):
+            return "critical"
+        return "elevated"
+
+    def _red_flag_rank_score(
+        self, point: FilingBriefPoint, is_new: bool, severity: str
+    ) -> float:
+        text = point.evidence_excerpt or point.detail
+        score = self._evidence_quality_score(text)
+        if severity == "critical":
+            score += 2.0
+        if is_new:
+            score += 1.5
+        if re.search(r"(\$\s?\d|\d+(?:\.\d+)?\s?%)", text):
+            score += 0.5
+        if point.confidence == "high":
+            score += 0.3
+        elif point.confidence == "medium":
+            score += 0.15
+        return score
+
+    def _red_flag_is_new_in_compare(
+        self, point: FilingBriefPoint, comparison: FilingComparison | None
+    ) -> bool:
+        if comparison is None:
+            return False
+        subjects = {
+            self._normalize_search_term(term)
+            for term in self._specific_subjects(
+                point.evidence_excerpt or point.detail, point.category
+            )
+        }
+        if not subjects:
+            return False
+        for section in comparison.compared_sections:
+            if section.item != "Item 1A":
+                continue
+            added = {self._normalize_search_term(term) for term in section.added_terms}
+            if subjects & added:
+                return True
+            if section.word_count_delta >= 50 and point.category == "Risk":
+                return True
+        return False
+
+    def _comparison_red_flags(
+        self,
+        comparison: FilingComparison | None,
+        citations: list[FilingCitation],
+    ) -> list[FilingRedFlag]:
+        if comparison is None:
+            return []
+
+        risk_terms = {
+            "export",
+            "litigation",
+            "weakness",
+            "constraint",
+            "cybersecurity",
+            "geopolitical",
+            "regulatory",
+            "sanction",
+            "tariff",
+        }
+        flags: list[FilingRedFlag] = []
+        for section in comparison.compared_sections:
+            if section.item != "Item 1A":
+                continue
+            added_risk = [
+                term
+                for term in section.added_terms
+                if self._normalize_search_term(term) in risk_terms
+                or any(risk in self._normalize_search_term(term) for risk in risk_terms)
+            ]
+            if not added_risk and section.word_count_delta < 50:
+                continue
+            emphasis = ", ".join(added_risk[:3]) if added_risk else "risk factors"
+            citation_index = self._citation_index_for_item(citations, section.item) or 0
+            severity = "critical" if any("weakness" in term.lower() for term in added_risk) else "elevated"
+            flags.append(
+                FilingRedFlag(
+                    headline="New or expanded " + emphasis + " risk disclosure",
+                    category_label="Filing comparison",
+                    evidence_excerpt=section.summary,
+                    implication=(
+                        "Item 1A changed by "
+                        + f"{section.word_count_delta:+,} words vs the prior filing. "
+                        + "Treat this as elevated diligence before the next period."
+                    ),
+                    severity=severity,
+                    citation_index=citation_index,
+                    confidence="medium",
+                    is_new_since_prior_filing=True,
+                    also_in_bear_case=False,
+                    category="Filing Comparison",
+                )
+            )
+            if len(flags) >= 2:
+                break
+        return flags
+
+    def _red_flag_category_label(self, point: FilingBriefPoint) -> str:
         text = (point.headline + " " + point.detail).lower()
         if any(term in text for term in ["export control", "export", "tariff", "sanction"]):
             return "Regulatory or trade restriction"

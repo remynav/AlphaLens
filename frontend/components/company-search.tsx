@@ -20,6 +20,8 @@ import {
   CompanyOverview,
   FilingComparison,
   FilingInvestorBrief,
+  FilingThesisPoint,
+  FilingRedFlag,
   FilingQuestionHistoryEntry,
   FilingQuestionAnswer,
   FilingSummary,
@@ -70,6 +72,125 @@ function sectionAnchorId(item: string, name: string) {
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, "-")
       .replace(/(^-|-$)/g, "")
+  );
+}
+
+function ThesisPointCard({
+  point,
+  citations,
+  sourceHref,
+  openSourceSection,
+  showFalsifier = false,
+}: {
+  point: FilingThesisPoint;
+  citations: FilingInvestorBrief["citations"];
+  sourceHref: (item: string, sectionName: string) => string;
+  openSourceSection: (
+    event: MouseEvent<HTMLAnchorElement>,
+    item: string,
+    sectionName: string,
+  ) => void;
+  showFalsifier?: boolean;
+}) {
+  const citation = point.citation_index > 0 ? citations[point.citation_index - 1] : null;
+
+  return (
+    <li className="rounded-md border border-white/10 bg-white/5 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-black text-bone">{point.headline}</span>
+        <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-normal text-mint">
+          {point.confidence}
+        </span>
+      </div>
+      {point.evidence_excerpt ? (
+        <p className="mt-2 text-sm leading-6 text-bone/70">{point.evidence_excerpt}</p>
+      ) : null}
+      {point.implication ? (
+        <p className="mt-2 text-sm leading-6 text-bone/80">
+          <span className="font-black text-bone">Implication:</span> {point.implication}
+        </p>
+      ) : null}
+      {showFalsifier && point.falsifier ? (
+        <p className="mt-2 text-sm leading-6 text-bone/80">
+          <span className="font-black text-bone">If/then:</span> {point.falsifier}
+        </p>
+      ) : null}
+      {citation ? (
+        <a
+          href={sourceHref(citation.item, citation.section_name)}
+          onClick={(event) => openSourceSection(event, citation.item, citation.section_name)}
+          className="mt-2 inline-flex text-xs font-black uppercase tracking-normal text-mint hover:text-bone"
+        >
+          View {citation.item} source
+        </a>
+      ) : null}
+    </li>
+  );
+}
+
+function RedFlagCard({
+  flag,
+  citations,
+  sourceHref,
+  openSourceSection,
+}: {
+  flag: FilingRedFlag;
+  citations: FilingInvestorBrief["citations"];
+  sourceHref: (item: string, sectionName: string) => string;
+  openSourceSection: (
+    event: MouseEvent<HTMLAnchorElement>,
+    item: string,
+    sectionName: string,
+  ) => void;
+}) {
+  const citation = flag.citation_index > 0 ? citations[flag.citation_index - 1] : null;
+
+  return (
+    <li className="rounded-md border border-red-300/20 bg-red-950/30 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-sm font-black text-bone">{flag.headline}</span>
+        <span
+          className={
+            "rounded px-2 py-0.5 text-[10px] font-black uppercase tracking-normal " +
+            (flag.severity === "critical"
+              ? "bg-red-500/30 text-red-100"
+              : "bg-red-300/20 text-red-100")
+          }
+        >
+          {flag.severity}
+        </span>
+        {flag.is_new_since_prior_filing ? (
+          <span className="rounded bg-amber-400/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-normal text-amber-100">
+            New since prior filing
+          </span>
+        ) : null}
+        {flag.also_in_bear_case ? (
+          <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-normal text-bone/70">
+            Also in bear case
+          </span>
+        ) : null}
+      </div>
+      <p className="mt-1 text-xs font-semibold uppercase tracking-normal text-red-100/80">
+        {flag.category_label}
+      </p>
+      {flag.evidence_excerpt ? (
+        <p className="mt-2 text-sm leading-6 text-bone/70">{flag.evidence_excerpt}</p>
+      ) : null}
+      {flag.implication ? (
+        <p className="mt-2 text-sm leading-6 text-bone/80">
+          <span className="font-black text-bone">Implication:</span> {flag.implication}
+        </p>
+      ) : null}
+      {citation ? (
+        <a
+          href={sourceHref(citation.item, citation.section_name)}
+          onClick={(event) => openSourceSection(event, citation.item, citation.section_name)}
+          className="mt-2 inline-flex text-xs font-black uppercase tracking-normal text-red-100 hover:text-bone"
+        >
+          View {citation.item} source
+        </a>
+      ) : null}
+    </li>
   );
 }
 
@@ -473,25 +594,44 @@ export function CompanySearch() {
                           <div className="mt-3 grid gap-4 lg:grid-cols-3">
                             <div>
                               <h4 className="text-sm font-black text-bone">Bull case</h4>
-                              <ul className="mt-2 space-y-2 text-sm leading-6 text-bone/80">
+                              <ul className="mt-2 space-y-2">
                                 {brief.thesis_cases.bull_case.map((point) => (
-                                  <li key={point}>{point}</li>
+                                  <ThesisPointCard
+                                    key={point.headline + point.citation_index}
+                                    point={point}
+                                    citations={brief.citations}
+                                    sourceHref={sourceHref}
+                                    openSourceSection={openSourceSection}
+                                  />
                                 ))}
                               </ul>
                             </div>
                             <div>
                               <h4 className="text-sm font-black text-bone">Bear case</h4>
-                              <ul className="mt-2 space-y-2 text-sm leading-6 text-bone/80">
+                              <ul className="mt-2 space-y-2">
                                 {brief.thesis_cases.bear_case.map((point) => (
-                                  <li key={point}>{point}</li>
+                                  <ThesisPointCard
+                                    key={point.headline + point.citation_index}
+                                    point={point}
+                                    citations={brief.citations}
+                                    sourceHref={sourceHref}
+                                    openSourceSection={openSourceSection}
+                                  />
                                 ))}
                               </ul>
                             </div>
                             <div>
                               <h4 className="text-sm font-black text-bone">What would change the view</h4>
-                              <ul className="mt-2 space-y-2 text-sm leading-6 text-bone/80">
+                              <ul className="mt-2 space-y-2">
                                 {brief.thesis_cases.watch_for.map((point) => (
-                                  <li key={point}>{point}</li>
+                                  <ThesisPointCard
+                                    key={point.headline + point.citation_index}
+                                    point={point}
+                                    citations={brief.citations}
+                                    sourceHref={sourceHref}
+                                    openSourceSection={openSourceSection}
+                                    showFalsifier
+                                  />
                                 ))}
                               </ul>
                             </div>
@@ -518,29 +658,20 @@ export function CompanySearch() {
                         {brief.red_flags.length > 0 ? (
                           <div className="mt-4 rounded-lg border border-red-300/30 bg-red-950/20 p-3">
                             <div className="eyebrow text-red-100">Red flags</div>
-                            <ul className="mt-3 list-disc space-y-2 pl-5 text-sm leading-6 text-bone/80">
-                              {brief.red_flags.map((point) => (
-                                <li key={point.headline + point.citation_index}>
-                                  <span className="font-black text-bone">{point.headline}.</span>{" "}
-                                  <span>{point.detail}</span>
-                                </li>
+                            <p className="mt-1 text-xs leading-5 text-bone/60">
+                              High-priority diligence items — not a repeat of the full bear case.
+                            </p>
+                            <ul className="mt-3 space-y-2">
+                              {brief.red_flags.map((flag) => (
+                                <RedFlagCard
+                                  key={flag.headline + flag.citation_index + flag.category_label}
+                                  flag={flag}
+                                  citations={brief.citations}
+                                  sourceHref={sourceHref}
+                                  openSourceSection={openSourceSection}
+                                />
                               ))}
                             </ul>
-                            {(() => {
-                              const citation = brief.citations[brief.red_flags[0].citation_index - 1];
-                              if (!citation) return null;
-                              return (
-                                <a
-                                  href={sourceHref(citation.item, citation.section_name)}
-                                  onClick={(event) =>
-                                    openSourceSection(event, citation.item, citation.section_name)
-                                  }
-                                  className="mt-3 inline-flex text-xs font-black uppercase tracking-normal text-red-100 hover:text-bone"
-                                >
-                                  View Risk Factors
-                                </a>
-                              );
-                            })()}
                           </div>
                         ) : null}
 

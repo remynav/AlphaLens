@@ -385,11 +385,18 @@ def test_generate_investor_brief_returns_structured_cited_points(tmp_path):
     assert brief.thesis_cases.bull_case
     assert brief.thesis_cases.bear_case
     assert brief.thesis_cases.watch_for
-    assert brief.red_flags
+    assert all(point.headline for point in brief.thesis_cases.bull_case)
+    assert all(point.implication for point in brief.thesis_cases.bear_case)
+    assert all(point.falsifier for point in brief.thesis_cases.watch_for)
+    assert any(point.stance == "bull" for point in brief.key_points)
+    if brief.red_flags:
+        assert all(flag.headline for flag in brief.red_flags)
+    assert all(flag.evidence_excerpt or flag.implication for flag in brief.red_flags)
+    assert all(flag.severity in {"critical", "elevated"} for flag in brief.red_flags)
     assert any(signal.label == "Revenue" for signal in brief.kpi_signals)
     assert all(signal.value != "Qualitative signal" for signal in brief.kpi_signals)
     assert any(point.category == "Risk" for point in brief.key_points)
-    assert any("Regulatory constraints" in point.detail for point in brief.key_points)
+    assert any(point.implication for point in brief.key_points)
     assert "filing readout" in brief.brief.lower()
 
 
@@ -711,3 +718,271 @@ async def test_fetch_supported_filing_record_uses_offset():
     assert record["form"] == "10-K"
     assert record["accession_number"] == "0001045810-25-000456"
     assert record["primary_document"] == "nvda-20250126.htm"
+
+
+def test_classify_stance_marks_growth_as_bull():
+    service = FilingService()
+    citation = FilingCitation(
+        section_name="Management Discussion and Analysis",
+        item="Item 7",
+        chunk_index=0,
+        excerpt="Revenue increased 30% because data center demand grew across customers.",
+        score=1.0,
+    )
+
+    assert service._classify_stance(citation) == "bull"
+
+
+def test_classify_stance_marks_export_risk_as_bear():
+    service = FilingService()
+    citation = FilingCitation(
+        section_name="Risk Factors",
+        item="Item 1A",
+        chunk_index=0,
+        excerpt="Export controls may delay customer shipments and adversely affect revenue.",
+        score=1.0,
+    )
+
+    assert service._classify_stance(citation) == "bear"
+
+
+def test_falsifier_points_use_if_then_language():
+    service = FilingService()
+    citation = FilingCitation(
+        section_name="Risk Factors",
+        item="Item 1A",
+        chunk_index=0,
+        excerpt="Export controls may delay customer shipments.",
+        score=1.0,
+    )
+    point = service._brief_point(citation, 1)
+
+    falsifiers = service._falsifier_points([point], [citation], None)
+
+    assert falsifiers
+    assert "If " in falsifiers[0].falsifier
+
+
+def test_red_flags_use_structured_fields_and_company_headline():
+    service = FilingService()
+    citation = FilingCitation(
+        section_name="Risk Factors",
+        item="Item 1A",
+        chunk_index=0,
+        excerpt="Export controls may delay customer shipments and adversely affect revenue.",
+        score=1.0,
+    )
+    point = service._brief_point(citation, 1)
+
+    flags = service._red_flags([point], [citation], None, [])
+
+    assert len(flags) == 1
+    assert flags[0].headline == point.headline
+    assert flags[0].category_label
+    assert flags[0].evidence_excerpt
+    assert flags[0].implication
+
+
+def test_red_flags_dedupe_from_bear_unless_critical():
+    service = FilingService()
+    citation = FilingCitation(
+        section_name="Risk Factors",
+        item="Item 1A",
+        chunk_index=0,
+        excerpt="Export controls may delay customer shipments and adversely affect revenue.",
+        score=1.0,
+    )
+    point = service._brief_point(citation, 1)
+    bear_thesis = [service._thesis_point_from_brief(citation, point, None)]
+
+    flags = service._red_flags([point], [citation], None, bear_thesis)
+
+    assert flags == []
+
+
+def test_red_flags_keeps_critical_controls_even_when_in_bear():
+    service = FilingService()
+    citation = FilingCitation(
+        section_name="Controls and Procedures",
+        item="Item 9A",
+        chunk_index=0,
+        excerpt="We identified a material weakness in internal control over financial reporting.",
+        score=1.0,
+    )
+    point = service._brief_point(citation, 1)
+    bear_thesis = [service._thesis_point_from_brief(citation, point, None)]
+
+    flags = service._red_flags([point], [citation], None, bear_thesis)
+
+    assert len(flags) == 1
+    assert flags[0].severity == "critical"
+    assert flags[0].also_in_bear_case
+
+
+def test_comparison_red_flags_surface_new_item_1a_emphasis():
+    service = FilingService()
+    comparison = service.compare_filings(
+        "NVDA",
+        latest=FilingSummary(
+            ticker="NVDA",
+            cik="0001045810",
+            company_name="NVIDIA CORP",
+            accession_number="0001045810-26-000123",
+            form="10-Q",
+            filing_date="2026-05-01",
+            report_date="2026-04-30",
+            primary_document="nvda.htm",
+            source_url="https://example.com",
+            index_url="https://example.com/index",
+            local_path="/tmp/latest.json",
+            sections=[
+                FilingSection(
+                    name="Risk Factors",
+                    item="Item 1A",
+                    text="Export controls and cybersecurity incidents may delay customer shipments. " * 20,
+                    word_count=120,
+                )
+            ],
+            ingested_at="2026-05-19T00:00:00+00:00",
+        ),
+        previous=FilingSummary(
+            ticker="NVDA",
+            cik="0001045810",
+            company_name="NVIDIA CORP",
+            accession_number="0001045810-25-000456",
+            form="10-K",
+            filing_date="2025-02-26",
+            report_date="2025-01-26",
+            primary_document="nvda-old.htm",
+            source_url="https://example.com/old",
+            index_url="https://example.com/old-index",
+            local_path="/tmp/previous.json",
+            sections=[
+                FilingSection(
+                    name="Risk Factors",
+                    item="Item 1A",
+                    text="Export controls may delay shipments.",
+                    word_count=6,
+                )
+            ],
+            ingested_at="2026-05-18T00:00:00+00:00",
+        ),
+    )
+
+    flags = service._comparison_red_flags(comparison, [])
+
+    assert flags
+    assert flags[0].is_new_since_prior_filing
+    assert "risk" in flags[0].headline.lower()
+
+
+def test_investor_brief_includes_comparison_thesis_when_two_filings(tmp_path):
+    service = FilingService(data_dir=tmp_path)
+    latest = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example-latest",
+        index_url="https://www.sec.gov/example-latest-index",
+        local_path=str(tmp_path / "NVDA_000104581026000123.json"),
+        sections=[
+            FilingSection(
+                name="Risk Factors",
+                item="Item 1A",
+                text=(
+                    "Export controls and geopolitical restrictions may delay customer shipments. "
+                    "Cybersecurity incidents could disrupt operations."
+                ),
+                word_count=16,
+            ),
+            FilingSection(
+                name="Management Discussion and Analysis",
+                item="Item 7",
+                text="Revenue increased 30% because data center demand grew across customers.",
+                word_count=10,
+            ),
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    previous = latest.model_copy(
+        update={
+            "accession_number": "0001045810-25-000456",
+            "filing_date": "2025-02-26",
+            "local_path": str(tmp_path / "NVDA_000104581025000456.json"),
+            "sections": [
+                FilingSection(
+                    name="Risk Factors",
+                    item="Item 1A",
+                    text="Export controls may delay shipments.",
+                    word_count=6,
+                ),
+                FilingSection(
+                    name="Management Discussion and Analysis",
+                    item="Item 7",
+                    text="Revenue increased because demand grew.",
+                    word_count=6,
+                ),
+            ],
+        }
+    )
+    service._persist(latest, "<html></html>")
+    service._persist(previous, "<html></html>")
+
+    brief = service.generate_investor_brief("NVDA")
+
+    assert any(
+        "prior filing" in point.headline.lower() or "Filing Comparison" == point.category
+        for point in brief.thesis_cases.bull_case + brief.thesis_cases.bear_case
+    )
+    assert any("period-over-period" in item.lower() for item in brief.limitations)
+
+
+def test_llm_investor_brief_uses_provider_when_enabled(monkeypatch, tmp_path):
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("ALPHALENS_LLM_SYNTHESIS", "1")
+    service = FilingService(data_dir=tmp_path)
+    summary = FilingSummary(
+        ticker="NVDA",
+        cik="0001045810",
+        company_name="NVIDIA CORP",
+        accession_number="0001045810-26-000123",
+        form="10-Q",
+        filing_date="2026-05-01",
+        report_date="2026-04-30",
+        primary_document="nvda-20260430.htm",
+        source_url="https://www.sec.gov/example",
+        index_url="https://www.sec.gov/example-index",
+        local_path=str(tmp_path / "NVDA_000104581026000123.json"),
+        sections=[
+            FilingSection(
+                name="Management Discussion and Analysis",
+                item="Item 7",
+                text="Revenue increased 30% because data center demand grew across customers.",
+                word_count=10,
+            ),
+        ],
+        ingested_at="2026-05-19T00:00:00+00:00",
+    )
+    service._persist(summary, "<html></html>")
+
+    monkeypatch.setattr(
+        service,
+        "_synthesize_investor_brief_llm",
+        lambda filing, citations, key_points, comparison: service._build_thesis_cases(
+            filing,
+            citations,
+            key_points,
+            service._kpi_signals(citations),
+            comparison,
+        ),
+    )
+
+    brief = service.generate_investor_brief("NVDA")
+
+    assert brief.synthesis_method == "llm-investor-brief"
+    assert brief.thesis_cases.bull_case[0].headline

@@ -93,6 +93,21 @@ export type FilingBriefPoint = {
   headline: string;
   detail: string;
   citation_index: number;
+  stance?: string;
+  evidence_excerpt?: string;
+  implication?: string;
+  confidence?: string;
+};
+
+export type FilingThesisPoint = {
+  headline: string;
+  evidence_excerpt: string;
+  implication: string;
+  falsifier: string;
+  stance: string;
+  category: string;
+  citation_index: number;
+  confidence: string;
 };
 
 export type FilingKpiSignal = {
@@ -103,9 +118,22 @@ export type FilingKpiSignal = {
 };
 
 export type FilingThesisCases = {
-  bull_case: string[];
-  bear_case: string[];
-  watch_for: string[];
+  bull_case: FilingThesisPoint[];
+  bear_case: FilingThesisPoint[];
+  watch_for: FilingThesisPoint[];
+};
+
+export type FilingRedFlag = {
+  headline: string;
+  category_label: string;
+  evidence_excerpt: string;
+  implication: string;
+  severity: string;
+  citation_index: number;
+  confidence: string;
+  is_new_since_prior_filing: boolean;
+  also_in_bear_case: boolean;
+  category: string;
 };
 
 export type FilingInvestorBrief = {
@@ -115,7 +143,7 @@ export type FilingInvestorBrief = {
   filing_date: string;
   brief: string;
   thesis_cases: FilingThesisCases;
-  red_flags: FilingBriefPoint[];
+  red_flags: FilingRedFlag[];
   kpi_signals: FilingKpiSignal[];
   key_points: FilingBriefPoint[];
   watch_items: string[];
