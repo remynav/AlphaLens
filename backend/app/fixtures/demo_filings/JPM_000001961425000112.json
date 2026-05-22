@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "ticker": "JPM",
+    "cik": "0000019614",
+    "company_name": "JPMORGAN CHASE & CO",
+    "accession_number": "0000019614-25-000112",
+    "form": "10-K",
+    "filing_date": "2025-02-14",
+    "report_date": "2024-12-31",
+    "primary_document": "jpm-20241231.htm",
+    "source_url": "https://www.sec.gov/example/jpm-prior.htm",
+    "index_url": "https://www.sec.gov/example/jpm-prior-index",
+    "local_path": "JPM_000001961425000112.json",
+    "sections": [
+      {
+        "name": "Risk Factors",
+        "item": "Item 1A",
+        "text": "Interest rate volatility may compress net interest margins. Regulatory capital requirements may limit shareholder distributions.",
+        "word_count": 18
+      },
+      {
+        "name": "Management Discussion and Analysis",
+        "item": "Item 7",
+        "text": "Net revenue was $39.4 billion, up 5% from the prior year, reflecting higher net interest income and investment banking fees.",
+        "word_count": 20
+      }
+    ],
+    "chunk_embeddings": [],
+    "ingested_at": "2026-05-18T00:00:00+00:00"
+  },
+  "raw_html": "<html><body>Demo prior filing</body></html>",
+  "validated_claims": []
+}

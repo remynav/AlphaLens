@@ -12,7 +12,7 @@ export default function Home() {
             </h1>
           </div>
           <div className="hidden rounded-lg border border-line bg-paper px-3 py-2 text-sm font-semibold text-moss sm:block">
-            Design foundation
+            Source-grounded SEC research
           </div>
         </div>
       </header>

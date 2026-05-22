@@ -1,0 +1,12 @@
+[
+  {
+    "ticker": "NVDA",
+    "accession_number": "0001045810-26-000123",
+    "question": "What are the main risks?",
+    "answer": "The main risks for NVIDIA Corp include export controls and geopolitical restrictions that may delay customer shipments and adversely affect revenue, supply constraints impacting product availability and data center deployments, and cybersecurity incidents that could disrupt operations. Export controls and geopolitical restrictions: Export controls and geopolitical restrictions may delay customer shipments and adversely affect revenue. [1] Supply constraints: Supply constraints may affect product availability and data center deployments. [1] Cybersecurity incidents: Cybersecurity incidents could disrupt operations. [1] Limitations: Answer synthesized from cached validated claims with citation guardrails.",
+    "citation_count": 1,
+    "retrieval_method": "openai-embedding",
+    "synthesis_method": "llm-validated-claims",
+    "answered_at": "2026-05-22T18:36:23.253600+00:00"
+  }
+]

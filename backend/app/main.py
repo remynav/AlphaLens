@@ -1,6 +1,10 @@
+import os
+
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+import app.config  # noqa: F401 — load .env on startup
+from app.config import demo_mode_enabled
 from app.services.company_service import CompanyLookupError, CompanyService
 from app.services.filing_service import (
     FilingIngestionError,
@@ -27,8 +31,13 @@ app.add_middleware(
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> dict[str, str | bool]:
+    return {
+        "status": "ok",
+        "demo_mode": demo_mode_enabled(),
+        "llm_judgment": bool(os.getenv("OPENAI_API_KEY"))
+        and os.getenv("ALPHALENS_LLM_SYNTHESIS", "1") != "0",
+    }
 
 
 @app.get("/company/{ticker}")

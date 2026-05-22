@@ -9,14 +9,7 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from app.services.filing_service import (
-        FilingBriefPoint,
-        FilingCitation,
-        FilingComparison,
-        FilingKpiSignal,
         FilingRedFlag,
-        FilingSummary,
-        FilingThesisCases,
-        FilingThesisPoint,
     )
 
 CLAIM_TYPES = frozenset(
@@ -631,3 +624,170 @@ def _excerpt(text: str, max_len: int) -> str:
     if len(cleaned) <= max_len:
         return cleaned
     return cleaned[: max_len - 3].rstrip() + "..."
+
+
+def _rank_claims_for_question(question: str, claims: list[EvidenceClaim]) -> list[EvidenceClaim]:
+    terms = {
+        term
+        for term in re.findall(r"[a-z0-9]{4,}", question.lower())
+        if term not in {"what", "when", "where", "which", "about", "from", "that", "this", "with"}
+    }
+
+    def score(claim: EvidenceClaim) -> int:
+        text = (claim.claim + " " + claim.category_label + " " + claim.claim_type).lower()
+        return sum(1 for term in terms if term in text)
+
+    ranked = sorted(claims, key=lambda claim: (score(claim), claim.confidence == "high"), reverse=True)
+    return ranked[:5]
+
+
+class QuestionClaimAnswerer:
+    def __init__(
+        self,
+        *,
+        api_key: str | None,
+        base_url: str,
+        model: str,
+        timeout: httpx.Timeout,
+        llm_enabled: bool,
+    ) -> None:
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.timeout = timeout
+        self.llm_enabled = llm_enabled and bool(api_key)
+
+    def answer(
+        self,
+        question: str,
+        claims: list[EvidenceClaim],
+        citations: list[Any],
+        filing: Any,
+    ) -> tuple[str, list[Any], list[str], str]:
+        from app.services.filing_service import FilingAnswerPoint
+
+        ranked = _rank_claims_for_question(question, claims)
+        if not ranked:
+            return (
+                "No validated claims matched this question.",
+                [],
+                ["Generate an investor brief first to populate the claim cache."],
+                "claims-cache-empty",
+            )
+
+        if self.llm_enabled:
+            llm_answer = self._llm_answer(question, ranked, citations, filing)
+            if llm_answer:
+                return llm_answer
+
+        evidence_points = [
+            FilingAnswerPoint(
+                label=claim.category_label or claim.claim_type,
+                text=claim.claim,
+                citation_index=claim.evidence_citation,
+                claim=claim.claim,
+                why_it_matters=claim.why_it_matters,
+                confidence=claim.confidence,
+            )
+            for claim in ranked[:3]
+        ]
+        lead = ranked[0].claim.rstrip(".")
+        direct_answer = (
+            "Based on validated filing claims, the strongest match is that "
+            + lead
+            + ". "
+            + (ranked[0].why_it_matters or "")
+        )
+        limitations = [
+            "Answer assembled from cached validated claims and retrieved citations.",
+            "Not a valuation opinion.",
+        ]
+        return direct_answer, evidence_points, limitations, "claims-cache-deterministic"
+
+    def _llm_answer(
+        self,
+        question: str,
+        claims: list[EvidenceClaim],
+        citations: list[Any],
+        filing: Any,
+    ) -> tuple[str, list[Any], list[str], str] | None:
+        from app.services.filing_service import FilingAnswerPoint
+
+        claim_lines = "\n".join(
+            f"[C{claim.evidence_citation}] ({claim.stance}/{claim.claim_type}) {claim.claim}"
+            for claim in claims
+        )
+        citation_lines = "\n".join(
+            f"[{index}] {citation.item}: {citation.excerpt[:400]}"
+            for index, citation in enumerate(citations, start=1)
+        )
+        try:
+            response = httpx.post(
+                self.base_url + "/chat/completions",
+                headers={
+                    "Authorization": "Bearer " + self.api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "temperature": 0.1,
+                    "response_format": {"type": "json_object"},
+                    "messages": [
+                        {
+                            "role": "system",
+                            "content": (
+                                "Answer the question using only validated claims and citations. "
+                                "Return JSON: direct_answer (string), evidence_points (array of "
+                                "objects with label, text, citation_index, claim, why_it_matters, "
+                                "confidence). Max 3 evidence points. Reference [n] citation indices."
+                            ),
+                        },
+                        {
+                            "role": "user",
+                            "content": (
+                                "Company: "
+                                + filing.company_name
+                                + "\nQuestion: "
+                                + question
+                                + "\n\nValidated claims:\n"
+                                + claim_lines
+                                + "\n\nCitations:\n"
+                                + citation_lines
+                            ),
+                        },
+                    ],
+                },
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+            payload = json.loads(str(response.json()["choices"][0]["message"]["content"]))
+        except (httpx.HTTPError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return None
+
+        direct_answer = str(payload.get("direct_answer", "")).strip()
+        if not direct_answer:
+            return None
+
+        evidence_points: list[Any] = []
+        for entry in payload.get("evidence_points", [])[:3]:
+            if not isinstance(entry, dict):
+                continue
+            evidence_points.append(
+                FilingAnswerPoint(
+                    label=str(entry.get("label", "Claim")),
+                    text=str(entry.get("text", "")),
+                    citation_index=int(entry.get("citation_index", 1) or 1),
+                    claim=str(entry.get("claim", "")) or None,
+                    why_it_matters=str(entry.get("why_it_matters", "")) or None,
+                    confidence=str(entry.get("confidence", "medium")),
+                )
+            )
+
+        return (
+            direct_answer,
+            evidence_points,
+            [
+                "Answer synthesized from cached validated claims with citation guardrails.",
+            ],
+            "llm-validated-claims",
+        )

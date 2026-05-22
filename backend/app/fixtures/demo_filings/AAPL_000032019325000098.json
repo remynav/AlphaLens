@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "ticker": "AAPL",
+    "cik": "0000320193",
+    "company_name": "Apple Inc.",
+    "accession_number": "0000320193-25-000098",
+    "form": "10-K",
+    "filing_date": "2025-11-01",
+    "report_date": "2025-09-28",
+    "primary_document": "aapl-20250928.htm",
+    "source_url": "https://www.sec.gov/example/aapl-prior.htm",
+    "index_url": "https://www.sec.gov/example/aapl-prior-index",
+    "local_path": "AAPL_000032019325000098.json",
+    "sections": [
+      {
+        "name": "Risk Factors",
+        "item": "Item 1A",
+        "text": "Intense competition in smartphone and personal computer markets may pressure pricing. Manufacturing concentration in certain regions may increase supply risk.",
+        "word_count": 22
+      },
+      {
+        "name": "Management Discussion and Analysis",
+        "item": "Item 7",
+        "text": "Net sales increased 2% to $119.4 billion driven by iPhone sales in Americas and steady Services performance.",
+        "word_count": 18
+      }
+    ],
+    "chunk_embeddings": [],
+    "ingested_at": "2026-05-18T00:00:00+00:00"
+  },
+  "raw_html": "<html><body>Demo prior filing</body></html>",
+  "validated_claims": []
+}

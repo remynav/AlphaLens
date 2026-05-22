@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, MouseEvent, useMemo, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   ArrowUpRight,
@@ -9,25 +9,28 @@ import {
   ExternalLink,
   FileText,
   GitCompareArrows,
-  History,
   Loader2,
-  MessageSquareQuote,
   Search,
-  Send,
 } from "lucide-react";
 
+import { ComparisonPanel } from "@/components/brief/ComparisonPanel";
+import { EvidenceLibrary } from "@/components/brief/EvidenceLibrary";
+import { formatDate, sectionAnchorId, synthesisMethodLabel } from "@/components/brief/format";
+import { QAPanel } from "@/components/brief/QAPanel";
+import { RedFlagCard } from "@/components/brief/RedFlagCard";
+import { ThesisPointCard } from "@/components/brief/ThesisPointCard";
+import { ValidatedClaimsPanel } from "@/components/brief/ValidatedClaimsPanel";
 import {
   CompanyOverview,
   FilingComparison,
   FilingInvestorBrief,
-  FilingThesisPoint,
-  FilingRedFlag,
   FilingQuestionHistoryEntry,
   FilingQuestionAnswer,
   FilingSummary,
   askFilingQuestion,
   compareFilings,
   fetchCompany,
+  fetchHealth,
   fetchInvestorBrief,
   fetchLatestFiling,
   fetchFilingQuestionHistory,
@@ -48,150 +51,6 @@ function formatPercent(value: number | null) {
   if (value === null) return "Unavailable";
   const sign = value > 0 ? "+" : "";
   return sign + value.toFixed(2) + "%";
-}
-
-function formatDate(value: string | null) {
-  if (!value) return "Unavailable";
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
-
-function formatSigned(value: number) {
-  const sign = value > 0 ? "+" : "";
-  return sign + value.toLocaleString();
-}
-
-function sectionAnchorId(item: string, name: string) {
-  return (
-    "section-" +
-    (item + "-" + name)
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/(^-|-$)/g, "")
-  );
-}
-
-function ThesisPointCard({
-  point,
-  citations,
-  sourceHref,
-  openSourceSection,
-  showFalsifier = false,
-}: {
-  point: FilingThesisPoint;
-  citations: FilingInvestorBrief["citations"];
-  sourceHref: (item: string, sectionName: string) => string;
-  openSourceSection: (
-    event: MouseEvent<HTMLAnchorElement>,
-    item: string,
-    sectionName: string,
-  ) => void;
-  showFalsifier?: boolean;
-}) {
-  const citation = point.citation_index > 0 ? citations[point.citation_index - 1] : null;
-
-  return (
-    <li className="rounded-md border border-white/10 bg-white/5 p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-black text-bone">{point.headline}</span>
-        <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-normal text-mint">
-          {point.confidence}
-        </span>
-      </div>
-      {point.evidence_excerpt ? (
-        <p className="mt-2 text-sm leading-6 text-bone/70">{point.evidence_excerpt}</p>
-      ) : null}
-      {point.implication ? (
-        <p className="mt-2 text-sm leading-6 text-bone/80">
-          <span className="font-black text-bone">Implication:</span> {point.implication}
-        </p>
-      ) : null}
-      {showFalsifier && point.falsifier ? (
-        <p className="mt-2 text-sm leading-6 text-bone/80">
-          <span className="font-black text-bone">If/then:</span> {point.falsifier}
-        </p>
-      ) : null}
-      {citation ? (
-        <a
-          href={sourceHref(citation.item, citation.section_name)}
-          onClick={(event) => openSourceSection(event, citation.item, citation.section_name)}
-          className="mt-2 inline-flex text-xs font-black uppercase tracking-normal text-mint hover:text-bone"
-        >
-          View {citation.item} source
-        </a>
-      ) : null}
-    </li>
-  );
-}
-
-function RedFlagCard({
-  flag,
-  citations,
-  sourceHref,
-  openSourceSection,
-}: {
-  flag: FilingRedFlag;
-  citations: FilingInvestorBrief["citations"];
-  sourceHref: (item: string, sectionName: string) => string;
-  openSourceSection: (
-    event: MouseEvent<HTMLAnchorElement>,
-    item: string,
-    sectionName: string,
-  ) => void;
-}) {
-  const citation = flag.citation_index > 0 ? citations[flag.citation_index - 1] : null;
-
-  return (
-    <li className="rounded-md border border-red-300/20 bg-red-950/30 p-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <span className="text-sm font-black text-bone">{flag.headline}</span>
-        <span
-          className={
-            "rounded px-2 py-0.5 text-[10px] font-black uppercase tracking-normal " +
-            (flag.severity === "critical"
-              ? "bg-red-500/30 text-red-100"
-              : "bg-red-300/20 text-red-100")
-          }
-        >
-          {flag.severity}
-        </span>
-        {flag.is_new_since_prior_filing ? (
-          <span className="rounded bg-amber-400/20 px-2 py-0.5 text-[10px] font-black uppercase tracking-normal text-amber-100">
-            New since prior filing
-          </span>
-        ) : null}
-        {flag.also_in_bear_case ? (
-          <span className="rounded bg-white/10 px-2 py-0.5 text-[10px] font-black uppercase tracking-normal text-bone/70">
-            Also in bear case
-          </span>
-        ) : null}
-      </div>
-      <p className="mt-1 text-xs font-semibold uppercase tracking-normal text-red-100/80">
-        {flag.category_label}
-      </p>
-      {flag.evidence_excerpt ? (
-        <p className="mt-2 text-sm leading-6 text-bone/70">{flag.evidence_excerpt}</p>
-      ) : null}
-      {flag.implication ? (
-        <p className="mt-2 text-sm leading-6 text-bone/80">
-          <span className="font-black text-bone">Implication:</span> {flag.implication}
-        </p>
-      ) : null}
-      {citation ? (
-        <a
-          href={sourceHref(citation.item, citation.section_name)}
-          onClick={(event) => openSourceSection(event, citation.item, citation.section_name)}
-          className="mt-2 inline-flex text-xs font-black uppercase tracking-normal text-red-100 hover:text-bone"
-        >
-          View {citation.item} source
-        </a>
-      ) : null}
-    </li>
-  );
 }
 
 type MetricCardProps = {
@@ -249,6 +108,13 @@ export function CompanySearch() {
   const [isBriefing, setIsBriefing] = useState(false);
   const [isComparing, setIsComparing] = useState(false);
   const [isAnswering, setIsAnswering] = useState(false);
+  const [demoMode, setDemoMode] = useState(false);
+
+  useEffect(() => {
+    fetchHealth()
+      .then((health) => setDemoMode(Boolean(health.demo_mode)))
+      .catch(() => setDemoMode(false));
+  }, []);
 
   const priceTone = useMemo(() => {
     const change = company?.price.change ?? 0;
@@ -383,6 +249,11 @@ export function CompanySearch() {
 
   return (
     <section className="w-full">
+      {demoMode ? (
+        <div className="border-b border-amber-300/40 bg-amber-50 px-4 py-2 text-center text-sm font-semibold text-amber-950 sm:px-6">
+          Demo mode — NVDA, AAPL, JPM with prior + latest filing fixtures. Set ALPHALENS_DEMO_MODE=0 for live SEC ingest.
+        </div>
+      ) : null}
       <div className="bg-ink px-4 py-6 text-bone sm:px-6 lg:px-10">
         <div className="mx-auto grid max-w-7xl gap-6 lg:grid-cols-[0.95fr_1.05fr] lg:items-end">
           <div>
@@ -584,13 +455,30 @@ export function CompanySearch() {
                             <h3 className="mt-1 text-xl font-black">Latest filing readout</h3>
                             <p className="mt-2 max-w-3xl text-sm leading-6 text-bone/80">{brief.brief}</p>
                           </div>
-                          <div className="text-xs font-black uppercase tracking-normal text-mint">
-                            {brief.synthesis_method}
-                          </div>
+                          <span
+                            className={
+                              "rounded px-2 py-1 text-xs font-black uppercase tracking-normal " +
+                              (brief.synthesis_method === "llm-validated-claims"
+                                ? "bg-mint/20 text-mint"
+                                : "bg-amber-400/20 text-amber-100")
+                            }
+                          >
+                            {synthesisMethodLabel(brief.synthesis_method)}
+                          </span>
                         </div>
+
+                        <ValidatedClaimsPanel
+                          brief={brief}
+                          sourceHref={sourceHref}
+                          openSourceSection={openSourceSection}
+                        />
 
                         <div className="mt-4 rounded-lg border border-white/10 bg-mint/10 p-3">
                           <div className="eyebrow text-mint">Thesis</div>
+                          <p className="mt-1 text-xs leading-5 text-bone/60">
+                            Bull and bear points are validated claims from cited excerpts. Falsifiers
+                            state what would change the view in the next filing or quarter.
+                          </p>
                           <div className="mt-3 grid gap-4 lg:grid-cols-3">
                             <div>
                               <h4 className="text-sm font-black text-bone">Bull case</h4>
@@ -697,252 +585,28 @@ export function CompanySearch() {
                     ) : null}
 
                     {comparison ? (
-                      <div className="rounded-lg border border-line bg-paper p-4 shadow-inset">
-                        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                          <div>
-                            <div className="eyebrow text-brass">Filing period comparison</div>
-                            <h3 className="mt-1 text-xl font-black text-ink">Changes since prior filing</h3>
-                            <p className="mt-2 text-sm font-semibold text-moss">
-                              {comparison.previous_filing_date} to {comparison.latest_filing_date}
-                            </p>
-                            <p className="mt-2 max-w-3xl text-sm leading-6 text-moss">
-                              {comparison.overall_change_summary}
-                            </p>
-                          </div>
-                          <div className="text-xs font-black uppercase tracking-normal text-brass">
-                            {comparison.comparison_method}
-                          </div>
-                        </div>
-
-                        <div className="mt-4 space-y-3">
-                          {comparison.compared_sections.map((section) => (
-                            <article
-                              key={section.item + section.section_name}
-                              className="rounded-lg border border-line bg-bone p-4"
-                            >
-                              <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-                                <div>
-                                  <h4 className="text-base font-black text-ink">
-                                    {section.item}: {section.section_name}
-                                  </h4>
-                                  <p className="mt-2 text-sm leading-6 text-moss">{section.summary}</p>
-                                </div>
-                                <div className="rounded-md border border-line bg-paper px-3 py-2 text-sm font-black text-ink">
-                                  {formatSigned(section.word_count_delta)} words
-                                </div>
-                              </div>
-
-                              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                <div className="rounded-md border border-line bg-paper p-3">
-                                  <div className="eyebrow text-moss">Newer emphasis</div>
-                                  <div className="mt-2 flex flex-wrap gap-2">
-                                    {section.added_terms.map((term) => (
-                                      <span
-                                        key={term}
-                                        className="rounded-md bg-mint px-2 py-1 text-xs font-black text-ink"
-                                      >
-                                        {term}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                                <div className="rounded-md border border-line bg-paper p-3">
-                                  <div className="eyebrow text-moss">Reduced emphasis</div>
-                                  <div className="mt-2 flex flex-wrap gap-2">
-                                    {section.removed_terms.map((term) => (
-                                      <span
-                                        key={term}
-                                        className="rounded-md bg-line px-2 py-1 text-xs font-black text-moss"
-                                      >
-                                        {term}
-                                      </span>
-                                    ))}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <details className="mt-3 rounded-md border border-line bg-paper p-3">
-                                <summary className="cursor-pointer text-sm font-black text-ink">
-                                  Review comparison evidence
-                                </summary>
-                                <div className="mt-3 grid gap-3 lg:grid-cols-2">
-                                {section.citations.map((citation) => (
-                                  <blockquote
-                                    key={citation.filing_label + citation.accession_number + citation.excerpt}
-                                    className="border-l-4 border-brass bg-bone px-4 py-3 text-sm leading-6 text-moss"
-                                  >
-                                    <div className="mb-2 font-black text-ink">
-                                      {citation.filing_label === "latest" ? "Latest" : "Previous"} filing
-                                      <span className="ml-2 text-xs text-brass">
-                                        {citation.filing_date}
-                                      </span>
-                                    </div>
-                                    {citation.filing_label === "latest" ? (
-                                      <a
-                                        href={sourceHref(citation.item, citation.section_name)}
-                                        onClick={(event) =>
-                                          openSourceSection(event, citation.item, citation.section_name)
-                                        }
-                                        className="mb-2 inline-flex text-xs font-black uppercase tracking-normal text-brass hover:text-signal"
-                                      >
-                                        Jump to latest section
-                                      </a>
-                                    ) : null}
-                                    {citation.excerpt}
-                                  </blockquote>
-                                ))}
-                                </div>
-                              </details>
-                            </article>
-                          ))}
-                        </div>
-                      </div>
+                      <ComparisonPanel
+                        comparison={comparison}
+                        sourceHref={sourceHref}
+                        openSourceSection={openSourceSection}
+                        onRegenerateBrief={filing ? onGenerateBrief : undefined}
+                        isBriefing={isBriefing}
+                      />
                     ) : null}
 
-                    <div className="rounded-lg border border-line bg-paper p-4 shadow-inset">
-                      <div className="flex items-center gap-2">
-                        <span className="flex h-8 w-8 items-center justify-center rounded-md bg-ink text-bone">
-                          <MessageSquareQuote className="h-4 w-4" />
-                        </span>
-                        <div>
-                          <div className="eyebrow text-brass">Cited filing Q&A</div>
-                          <h3 className="mt-1 text-xl font-black text-ink">Ask the ingested filing</h3>
-                        </div>
-                      </div>
+                    <QAPanel
+                      question={question}
+                      onQuestionChange={setQuestion}
+                      onSubmit={onAskQuestion}
+                      isAnswering={isAnswering}
+                      questionError={questionError}
+                      answer={answer}
+                      questionHistory={questionHistory}
+                      sourceHref={sourceHref}
+                      openSourceSection={openSourceSection}
+                    />
 
-                      <form onSubmit={onAskQuestion} className="mt-4 grid gap-3 sm:grid-cols-[1fr_auto]">
-                        <label className="sr-only" htmlFor="filing-question">
-                          Filing question
-                        </label>
-                        <input
-                          id="filing-question"
-                          value={question}
-                          onChange={(event) => setQuestion(event.target.value)}
-                          placeholder="Ask about risks, revenue, controls..."
-                          className="h-12 w-full rounded-lg border border-line bg-white px-3 text-base font-semibold text-ink outline-none transition placeholder:text-moss focus:border-brass focus:ring-2 focus:ring-brass/25"
-                        />
-                        <button
-                          type="submit"
-                          disabled={isAnswering}
-                          className="icon-button bg-signal text-white hover:bg-brass disabled:cursor-not-allowed disabled:opacity-70"
-                        >
-                          {isAnswering ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                          Ask
-                        </button>
-                      </form>
-
-                      {questionError ? (
-                        <div className="mt-4 flex items-start gap-3 rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
-                          <AlertCircle className="mt-0.5 h-5 w-5 shrink-0" />
-                          <p className="text-sm font-semibold">{questionError}</p>
-                        </div>
-                      ) : null}
-
-                      {answer ? (
-                        <div className="mt-4 space-y-4">
-                          <div className="rounded-lg border border-line bg-bone p-4">
-                            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                              <div className="eyebrow text-moss">Answer</div>
-                              <div className="text-xs font-black uppercase tracking-normal text-brass">
-                                {answer.retrieval_method} / {answer.synthesis_method}
-                              </div>
-                            </div>
-                            <p className="mt-2 text-base font-black leading-6 text-ink">
-                              {answer.direct_answer || answer.answer}
-                            </p>
-                            {answer.evidence_points.length > 0 ? (
-                              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                {answer.evidence_points.map((point) => (
-                                  <article
-                                    key={point.label + point.citation_index}
-                                    className="rounded-md border border-line bg-paper p-3"
-                                  >
-                                    <div className="text-xs font-black uppercase tracking-normal text-brass">
-                                      {point.label} / Citation {point.citation_index} / {point.confidence}
-                                    </div>
-                                    <p className="mt-2 text-sm font-black leading-6 text-ink">
-                                      {point.claim ?? point.text}
-                                    </p>
-                                    {point.why_it_matters ? (
-                                      <p className="mt-2 text-sm leading-6 text-moss">{point.why_it_matters}</p>
-                                    ) : null}
-                                    <a
-                                      href={sourceHref(
-                                        answer.citations[point.citation_index - 1]?.item ?? "",
-                                        answer.citations[point.citation_index - 1]?.section_name ?? "",
-                                      )}
-                                      onClick={(event) =>
-                                        openSourceSection(
-                                          event,
-                                          answer.citations[point.citation_index - 1]?.item ?? "",
-                                          answer.citations[point.citation_index - 1]?.section_name ?? "",
-                                        )
-                                      }
-                                      className="mt-3 inline-flex text-xs font-black uppercase tracking-normal text-brass hover:text-signal"
-                                    >
-                                      See source section
-                                    </a>
-                                  </article>
-                                ))}
-                              </div>
-                            ) : null}
-                            {answer.limitations.length > 0 ? (
-                              <p className="mt-3 text-xs font-semibold leading-5 text-moss">
-                                {answer.limitations.join(" ")}
-                              </p>
-                            ) : null}
-                          </div>
-                        </div>
-                      ) : null}
-
-                      {questionHistory.length > 0 ? (
-                        <div className="mt-4 rounded-lg border border-line bg-bone p-4">
-                          <div className="flex items-center gap-2">
-                            <History className="h-4 w-4 text-brass" />
-                            <div className="eyebrow text-moss">Saved question history</div>
-                          </div>
-                          <div className="mt-3 space-y-3">
-                            {questionHistory.map((entry) => (
-                              <article
-                                key={entry.answered_at + entry.question}
-                                className="rounded-md border border-line bg-paper px-3 py-2 text-sm"
-                              >
-                                <div className="font-black text-ink">{entry.question}</div>
-                                <div className="mt-1 text-xs font-semibold text-moss">
-                                  {entry.citation_count} citations / {formatDate(entry.answered_at)}
-                                </div>
-                              </article>
-                            ))}
-                          </div>
-                        </div>
-                      ) : null}
-                    </div>
-
-                    <div id="filing-sections" className="space-y-3 scroll-mt-6">
-                      <div>
-                        <div className="eyebrow text-moss">Filing source sections</div>
-                        <h3 className="mt-1 text-xl font-black text-ink">Evidence library</h3>
-                      </div>
-                      {filing.sections.map((section) => (
-                        <details
-                          key={section.item + section.name}
-                          id={sectionAnchorId(section.item, section.name)}
-                          className="scroll-mt-6 rounded-lg border border-line bg-bone p-4 shadow-inset"
-                        >
-                          <summary className="cursor-pointer list-none">
-                            <div className="flex flex-col gap-1 sm:flex-row sm:items-baseline sm:justify-between">
-                              <h3 className="text-base font-black text-ink">
-                                {section.item}: {section.name}
-                              </h3>
-                              <span className="eyebrow text-moss">
-                                {section.word_count.toLocaleString()} words
-                              </span>
-                            </div>
-                          </summary>
-                          <p className="mt-3 text-sm leading-6 text-moss">{section.text}</p>
-                        </details>
-                      ))}
-                    </div>
+                    <EvidenceLibrary filing={filing} />
                   </div>
                 ) : null}
               </div>
@@ -985,11 +649,17 @@ export function CompanySearch() {
           </div>
 
           <div className="surface rounded-lg p-5">
-            <h2 className="eyebrow text-moss">Next MVP steps</h2>
+            <h2 className="eyebrow text-moss">How it works</h2>
             <ol className="mt-4 space-y-3 text-sm font-medium text-moss">
-              <li className="rounded-md border border-line bg-bone px-3 py-2">1. Add watchlists and saved companies.</li>
-              <li className="rounded-md border border-line bg-bone px-3 py-2">2. Add exportable research notes.</li>
-              <li className="rounded-md border border-line bg-bone px-3 py-2">3. Add multi-company research queues.</li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">
+                1. Ingest the latest 10-K/10-Q from SEC EDGAR.
+              </li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">
+                2. Review the validated-claims investor brief (bull / bear / falsifiers).
+              </li>
+              <li className="rounded-md border border-line bg-bone px-3 py-2">
+                3. Ask cited questions and compare against the prior filing.
+              </li>
             </ol>
           </div>
         </aside>

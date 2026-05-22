@@ -164,6 +164,11 @@ export type FilingComparisonCitation = {
   excerpt: string;
 };
 
+export type FilingSentencePair = {
+  latest: string;
+  previous: string;
+};
+
 export type FilingSectionComparison = {
   section_name: string;
   item: string;
@@ -172,8 +177,43 @@ export type FilingSectionComparison = {
   word_count_delta: number;
   added_terms: string[];
   removed_terms: string[];
+  added_sentences: string[];
+  removed_sentences: string[];
+  modified_sentences: FilingSentencePair[];
   summary: string;
   citations: FilingComparisonCitation[];
+};
+
+export type FilingKpiDelta = {
+  label: string;
+  previous_value: string | null;
+  latest_value: string | null;
+  change_summary: string;
+  previous_context: string;
+  latest_context: string;
+};
+
+export type FilingComparisonValidatedClaim = {
+  claim: string;
+  claim_type: string;
+  stance: string;
+  why_it_matters: string;
+  confidence: string;
+  category_label: string;
+  latest_citation_index: number;
+  previous_citation_index: number | null;
+  latest_verbatim_span: string;
+  previous_verbatim_span: string;
+  section_item: string;
+  section_name: string;
+};
+
+export type FilingComparisonTopChange = {
+  headline: string;
+  detail: string;
+  stance: string;
+  section_item: string;
+  priority: number;
 };
 
 export type FilingComparison = {
@@ -185,9 +225,29 @@ export type FilingComparison = {
   previous_filing_date: string;
   overall_change_summary: string;
   compared_sections: FilingSectionComparison[];
+  kpi_deltas: FilingKpiDelta[];
+  validated_comparison_claims: FilingComparisonValidatedClaim[];
+  comparison_claims_synthesis: string;
+  material_changes_summary: string;
+  top_material_changes: FilingComparisonTopChange[];
+  material_changes_synthesis: string;
   comparison_method: string;
   compared_at: string;
 };
+
+export type HealthStatus = {
+  status: string;
+  demo_mode?: boolean;
+  llm_judgment?: boolean;
+};
+
+export async function fetchHealth(): Promise<HealthStatus> {
+  const response = await fetch("/api/health", { cache: "no-store" });
+  if (!response.ok) {
+    throw new Error("Backend health check failed.");
+  }
+  return response.json();
+}
 
 export async function fetchCompany(ticker: string): Promise<CompanyOverview> {
   const response = await fetch("/api/company/" + encodeURIComponent(ticker), {

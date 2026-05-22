@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "ticker": "JPM",
+    "cik": "0000019614",
+    "company_name": "JPMORGAN CHASE & CO",
+    "accession_number": "0000019614-26-000089",
+    "form": "10-Q",
+    "filing_date": "2026-04-15",
+    "report_date": "2026-03-31",
+    "primary_document": "jpm-20260331.htm",
+    "source_url": "https://www.sec.gov/example/jpm.htm",
+    "index_url": "https://www.sec.gov/example/jpm-index",
+    "local_path": "JPM_000001961426000089.json",
+    "sections": [
+      {
+        "name": "Risk Factors",
+        "item": "Item 1A",
+        "text": "Credit losses may increase if macroeconomic conditions weaken. Litigation related to prior acquisitions may result in material settlements.",
+        "word_count": 18
+      },
+      {
+        "name": "Management Discussion and Analysis",
+        "item": "Item 7",
+        "text": "Net revenue was $42.5 billion, up 8% from the prior year, reflecting higher net interest income and strong markets revenue.",
+        "word_count": 20
+      }
+    ],
+    "chunk_embeddings": [],
+    "ingested_at": "2026-05-19T00:00:00+00:00"
+  },
+  "raw_html": "<html><body>Demo filing</body></html>",
+  "validated_claims": []
+}

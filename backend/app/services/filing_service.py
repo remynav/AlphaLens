@@ -14,6 +14,20 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.services.company_service import CompanyService
+from app.services.filing.comparison_claims import (
+    FilingComparisonTopChange,
+    FilingComparisonValidatedClaim,
+)
+from app.services.filing.comparison import (
+    best_excerpt,
+    build_section_summary,
+    compare_filing_kpi_deltas,
+    display_search_term,
+    rank_term_delta,
+    sentence_changes,
+    term_frequencies,
+)
+from app.services.filing.retrieval import normalize_search_term, search_terms
 
 
 SEC_SUBMISSIONS_URL = "https://data.sec.gov/submissions/CIK{cik}.json"
@@ -278,6 +292,11 @@ class FilingComparisonCitation(BaseModel):
     excerpt: str
 
 
+class FilingSentencePair(BaseModel):
+    latest: str
+    previous: str
+
+
 class FilingSectionComparison(BaseModel):
     section_name: str
     item: str
@@ -286,8 +305,20 @@ class FilingSectionComparison(BaseModel):
     word_count_delta: int
     added_terms: list[str]
     removed_terms: list[str]
+    added_sentences: list[str] = Field(default_factory=list)
+    removed_sentences: list[str] = Field(default_factory=list)
+    modified_sentences: list[FilingSentencePair] = Field(default_factory=list)
     summary: str
     citations: list[FilingComparisonCitation]
+
+
+class FilingKpiDelta(BaseModel):
+    label: str
+    previous_value: str | None = None
+    latest_value: str | None = None
+    change_summary: str
+    previous_context: str = ""
+    latest_context: str = ""
 
 
 class FilingComparison(BaseModel):
@@ -299,6 +330,12 @@ class FilingComparison(BaseModel):
     previous_filing_date: str
     overall_change_summary: str
     compared_sections: list[FilingSectionComparison]
+    kpi_deltas: list[FilingKpiDelta] = Field(default_factory=list)
+    validated_comparison_claims: list[FilingComparisonValidatedClaim] = Field(default_factory=list)
+    comparison_claims_synthesis: str = "deterministic-comparison-claims"
+    material_changes_summary: str = ""
+    top_material_changes: list[FilingComparisonTopChange] = Field(default_factory=list)
+    material_changes_synthesis: str = "deterministic-material-changes"
     comparison_method: str
     compared_at: str
 
@@ -311,7 +348,17 @@ class FilingService:
         user_agent: str | None = None,
     ) -> None:
         self.timeout = httpx.Timeout(timeout_seconds)
-        self.data_dir = data_dir or Path(__file__).resolve().parents[2] / "data" / "filings"
+        if data_dir is not None:
+            self.data_dir = data_dir
+        else:
+            from app.config import demo_filings_dir, demo_mode_enabled
+
+            self.data_dir = (
+                demo_filings_dir()
+                if demo_mode_enabled()
+                else Path(__file__).resolve().parents[2] / "data" / "filings"
+            )
+        self.demo_mode = self._is_demo_data_dir(self.data_dir)
         self.user_agent = (
             user_agent
             or os.getenv("SEC_USER_AGENT")
@@ -333,11 +380,17 @@ class FilingService:
         )
 
     async def ingest_latest(self, ticker: str) -> FilingSummary:
+        if self.demo_mode:
+            return self._load_demo_filing(ticker)
         return await self.ingest_supported_filing(ticker, offset=0)
 
     async def ingest_supported_filing(self, ticker: str, offset: int = 0) -> FilingSummary:
         if offset < 0:
             raise FilingIngestionError("Filing offset must be zero or greater.")
+        if self.demo_mode:
+            raise FilingIngestionError(
+                "Live SEC ingest is disabled in demo mode. Supported tickers: NVDA, AAPL, JPM."
+            )
 
         company = await CompanyService().lookup(ticker)
         cik = company.cik
@@ -382,6 +435,8 @@ class FilingService:
         return summary
 
     async def ingest_comparison_filings(self, ticker: str) -> FilingComparison:
+        if self.demo_mode:
+            return self._compare_demo_filings(ticker)
         latest = await self.ingest_supported_filing(ticker, offset=0)
         previous = await self.ingest_supported_filing(ticker, offset=1)
         return self.compare_filings(ticker, latest=latest, previous=previous)
@@ -446,6 +501,7 @@ class FilingService:
             filing.chunk_embeddings = self._build_chunk_embeddings(filing.sections)
 
         citations = self._retrieve_citations(filing, self._retrieval_query(normalized_question))
+        stored_claims = self._load_stored_validated_claims(filing)
         if not citations:
             answer = (
                 "I could not find enough matching evidence in the ingested filing sections to answer "
@@ -456,6 +512,19 @@ class FilingService:
             evidence_points: list[FilingAnswerPoint] = []
             limitations = ["No sufficiently relevant filing excerpts were retrieved."]
             synthesis_method = "none-no-citations"
+        elif stored_claims:
+            from app.services.evidence_claims import QuestionClaimAnswerer
+
+            direct_answer, evidence_points, limitations, synthesis_method = (
+                QuestionClaimAnswerer(
+                    api_key=str(self.openai_api_key) if self.openai_api_key else None,
+                    base_url=self.openai_base_url,
+                    model=self.llm_model,
+                    timeout=self.timeout,
+                    llm_enabled=self.llm_synthesis_enabled,
+                ).answer(normalized_question, stored_claims, citations, filing)
+            )
+            answer = self._format_structured_answer(direct_answer, evidence_points, limitations)
         else:
             direct_answer, evidence_points, limitations, synthesis_method = self._synthesize_answer(
                 normalized_question, citations
@@ -491,7 +560,9 @@ class FilingService:
         ingested = self.get_ingested_filings(ticker, limit=2)
         if len(ingested) >= 2:
             try:
-                comparison = self.compare_filings(ticker, latest=ingested[0], previous=ingested[1])
+                comparison = self._compare_filings_with_claims(
+                    ticker, latest=ingested[0], previous=ingested[1]
+                )
             except FilingIngestionError:
                 comparison = None
 
@@ -557,7 +628,12 @@ class FilingService:
         comparison: FilingComparison | None,
         kpi_signals: list[FilingKpiSignal],
     ) -> FilingInvestorBrief | None:
-        from app.services.evidence_claims import BriefAssembler, ClaimExtractor, ClaimValidator
+        from app.services.evidence_claims import (
+            BriefAssembler,
+            ClaimExtractor,
+            ClaimValidator,
+            _normalize_text,
+        )
 
         try:
             snapshot, raw_claims = ClaimExtractor(
@@ -567,6 +643,20 @@ class FilingService:
                 timeout=self.timeout,
             ).extract(filing, citations, comparison)
             validated = ClaimValidator().validate_all(raw_claims, citations)
+            comparison_claims = self._comparison_claims_for_brief(filing, citations, comparison)
+            if comparison_claims:
+                merged = list(validated)
+                seen = {_normalize_text(claim.claim)[:80] for claim in merged}
+                for claim in comparison_claims:
+                    ok, _ = ClaimValidator().validate(claim, citations)
+                    if not ok:
+                        continue
+                    key = _normalize_text(claim.claim)[:80]
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    merged.append(claim)
+                validated = merged
             if not validated:
                 return None
 
@@ -584,6 +674,7 @@ class FilingService:
             ]
             limitations.extend(assembled.limitations)
             watch_items = list(dict.fromkeys(assembled.watch_items + assembled.open_questions))
+            self._persist_validated_claims(filing, assembled.validated_claims)
 
             return FilingInvestorBrief(
                 ticker=filing.ticker,
@@ -626,6 +717,14 @@ class FilingService:
             )
         return self.compare_filings(ticker, latest=filings[0], previous=filings[1])
 
+    def _compare_filings_with_claims(
+        self,
+        ticker: str,
+        latest: FilingSummary,
+        previous: FilingSummary,
+    ) -> FilingComparison:
+        return self.compare_filings(ticker, latest=latest, previous=previous)
+
     def compare_filings(
         self,
         ticker: str,
@@ -646,18 +745,155 @@ class FilingService:
         if not comparisons:
             raise FilingIngestionError("No comparable filing sections were found.")
 
-        return FilingComparison(
+        kpi_text_latest = self._financial_sections_text(latest)
+        kpi_text_previous = self._financial_sections_text(previous)
+        kpi_deltas = [
+            FilingKpiDelta(
+                label=delta.label,
+                previous_value=delta.previous_value,
+                latest_value=delta.latest_value,
+                change_summary=delta.change_summary,
+                previous_context=delta.previous_context,
+                latest_context=delta.latest_context,
+            )
+            for delta in compare_filing_kpi_deltas(kpi_text_latest, kpi_text_previous)
+        ]
+
+        comparison = FilingComparison(
             ticker=latest.ticker,
             company_name=latest.company_name,
             latest_accession_number=latest.accession_number,
             latest_filing_date=latest.filing_date,
             previous_accession_number=previous.accession_number,
             previous_filing_date=previous.filing_date,
-            overall_change_summary=self._overall_change_summary(comparisons),
+            overall_change_summary=self._overall_change_summary(comparisons, kpi_deltas),
             compared_sections=comparisons,
-            comparison_method="section-term-delta-with-citations",
+            kpi_deltas=kpi_deltas,
+            comparison_method="section-diff-kpi-v2",
             compared_at=datetime.now(UTC).isoformat(),
         )
+        validated_claims, synthesis = self._build_validated_comparison_claims(comparison)
+        comparison.validated_comparison_claims = validated_claims
+        comparison.comparison_claims_synthesis = synthesis
+        summary, top_changes, material_synthesis = self._build_material_changes(
+            comparison, validated_claims
+        )
+        comparison.material_changes_summary = summary
+        comparison.top_material_changes = top_changes
+        comparison.material_changes_synthesis = material_synthesis
+        self._persist_comparison_claims(latest, comparison.validated_comparison_claims)
+        return comparison
+
+    def _build_material_changes(
+        self,
+        comparison: FilingComparison,
+        validated_claims: list[FilingComparisonValidatedClaim],
+    ) -> tuple[str, list[FilingComparisonTopChange], str]:
+        from app.services.filing.comparison_claims import build_top_material_changes
+
+        return build_top_material_changes(
+            validated_claims,
+            comparison,
+            api_key=self.openai_api_key,
+            base_url=self.openai_base_url,
+            model=self.llm_model,
+            timeout=self.timeout,
+            llm_enabled=self.llm_synthesis_enabled,
+        )
+
+    def _build_validated_comparison_claims(
+        self, comparison: FilingComparison
+    ) -> tuple[list[FilingComparisonValidatedClaim], str]:
+        from app.services.filing.comparison_claims import build_validated_comparison_claims
+
+        claims, synthesis = build_validated_comparison_claims(
+            comparison,
+            api_key=self.openai_api_key,
+            base_url=self.openai_base_url,
+            model=self.llm_model,
+            timeout=self.timeout,
+            llm_enabled=self.llm_synthesis_enabled,
+        )
+        return claims, synthesis
+
+    def _comparison_claims_for_brief(
+        self,
+        filing: FilingSummary,
+        citations: list[FilingCitation],
+        comparison: FilingComparison | None,
+    ) -> list[Any]:
+        stored = self._load_stored_comparison_claims(filing)
+        source = stored
+        if comparison and comparison.validated_comparison_claims:
+            source = comparison.validated_comparison_claims
+        return self._comparison_claims_as_evidence(source, citations)
+
+    def _load_stored_comparison_claims(
+        self, filing: FilingSummary
+    ) -> list[FilingComparisonValidatedClaim]:
+        path = self._filing_payload_path(filing)
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8") as file:
+            payload = json.load(file)
+        raw = payload.get("comparison_validated_claims", [])
+        if not isinstance(raw, list):
+            return []
+        return [
+            FilingComparisonValidatedClaim.model_validate(entry)
+            for entry in raw
+            if isinstance(entry, dict)
+        ]
+
+    def _comparison_claims_as_evidence(
+        self,
+        comparison_claims: list[FilingComparisonValidatedClaim],
+        citations: list[FilingCitation],
+    ) -> list[Any]:
+        from app.services.evidence_claims import EvidenceClaim
+
+        evidence: list[EvidenceClaim] = []
+        for entry in comparison_claims:
+            citation_index = self._citation_index_for_item(citations, entry.section_item)
+            if citation_index is None:
+                continue
+            evidence.append(
+                EvidenceClaim(
+                    claim=entry.claim,
+                    evidence_citation=citation_index,
+                    verbatim_span=entry.latest_verbatim_span or entry.claim,
+                    claim_type="comparison_delta",
+                    stance=entry.stance,
+                    why_it_matters=entry.why_it_matters,
+                    confidence=entry.confidence,
+                    category_label=entry.category_label or "Filing comparison",
+                )
+            )
+        return evidence
+
+    def _persist_comparison_claims(
+        self,
+        latest: FilingSummary,
+        claims: list[FilingComparisonValidatedClaim],
+    ) -> None:
+        if self.demo_mode:
+            return
+        path = self._filing_payload_path(latest)
+        if not path.exists():
+            return
+        with path.open(encoding="utf-8") as file:
+            payload = json.load(file)
+        payload["comparison_validated_claims"] = [
+            claim.model_dump() for claim in claims
+        ]
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _financial_sections_text(self, filing: FilingSummary) -> str:
+        parts: list[str] = []
+        for section in filing.sections:
+            if section.item in {"Item 7", "Item 8"}:
+                parts.append(section.text)
+        return "\n".join(parts)
 
     async def _fetch_latest_filing_record(
         self, client: httpx.AsyncClient, cik: str
@@ -956,8 +1192,7 @@ class FilingService:
         return chunks
 
     def _search_terms(self, text: str) -> set[str]:
-        tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9-]{2,}", text.lower())
-        return {self._normalize_search_term(token) for token in tokens if token not in STOP_WORDS}
+        return search_terms(text)
 
     def _retrieval_query(self, question: str) -> str:
         lowered = question.lower()
@@ -972,15 +1207,7 @@ class FilingService:
         return question
 
     def _normalize_search_term(self, term: str) -> str:
-        if len(term) > 4 and term.endswith("ies"):
-            return term[:-3] + "y"
-        if len(term) > 5 and term.endswith("ing"):
-            return term[:-3]
-        if len(term) > 4 and term.endswith("ed"):
-            return term[:-2]
-        if len(term) > 4 and term.endswith("s"):
-            return term[:-1]
-        return term
+        return normalize_search_term(term)
 
     def _embed_text(self, text: str) -> list[float]:
         terms = self._search_terms(text)
@@ -1124,7 +1351,7 @@ class FilingService:
                     continue
                 counts[term] = counts.get(term, 0) + 1
         ranked = sorted(counts.items(), key=lambda entry: (entry[1], entry[0]), reverse=True)
-        terms = [self._display_search_term(term) for term, _ in ranked[:4]]
+        terms = [display_search_term(term) for term, _ in ranked[:4]]
         return ", ".join(terms)
 
     def _specific_subjects(self, text: str, category: str) -> list[str]:
@@ -1412,7 +1639,7 @@ class FilingService:
         sentence = self._investor_detail(citation)
         terms = self._specific_subjects(sentence, category)
         if terms:
-            return category + ": " + ", ".join(self._display_search_term(term) for term in terms[:2])
+            return category + ": " + ", ".join(display_search_term(term) for term in terms[:2])
         return category + " signal from " + citation.item
 
     def _investor_detail(self, citation: FilingCitation) -> str:
@@ -1543,7 +1770,7 @@ class FilingService:
         category = self._classify_investor_category(citation)
         subjects = self._specific_subjects(sentence, category)
         if subjects:
-            subject_text = ", ".join(self._display_search_term(term) for term in subjects[:2])
+            subject_text = ", ".join(display_search_term(term) for term in subjects[:2])
             if stance == "bull":
                 return subject_text + " supports operating momentum"
             if stance == "bear":
@@ -1553,7 +1780,7 @@ class FilingService:
 
     def _thesis_implication(self, category: str, sentence: str, stance: str) -> str:
         subjects = self._specific_subjects(sentence, category)
-        topic = ", ".join(self._display_search_term(term) for term in subjects[:2]) or category.lower()
+        topic = ", ".join(display_search_term(term) for term in subjects[:2]) or category.lower()
         metric = self._kpi_metric_for_sentence(sentence)
         metric_text = metric[1] if metric else ""
         if stance == "bull":
@@ -1655,7 +1882,7 @@ class FilingService:
         for point in key_points[:4]:
             category = point.category
             subjects = self._specific_subjects(point.evidence_excerpt or point.detail, category)
-            topic = ", ".join(self._display_search_term(term) for term in subjects[:2]) or category.lower()
+            topic = ", ".join(display_search_term(term) for term in subjects[:2]) or category.lower()
             citation = citations[point.citation_index - 1]
             if point.stance == "bull":
                 falsifier = (
@@ -2260,20 +2487,19 @@ class FilingService:
         latest: FilingSummary,
         previous: FilingSummary,
     ) -> FilingSectionComparison:
-        latest_terms = self._term_frequencies(latest_section.text)
-        previous_terms = self._term_frequencies(previous_section.text)
-        added_terms = self._rank_term_delta(latest_terms, previous_terms)
-        removed_terms = self._rank_term_delta(previous_terms, latest_terms)
+        latest_terms = term_frequencies(latest_section.text)
+        previous_terms = term_frequencies(previous_section.text)
+        added_terms = rank_term_delta(latest_terms, previous_terms)
+        removed_terms = rank_term_delta(previous_terms, latest_terms)
         word_count_delta = latest_section.word_count - previous_section.word_count
-
-        summary_parts = [
-            f"{latest_section.item}: {latest_section.name} changed by {word_count_delta:+,} words."
+        changes = sentence_changes(latest_section.text, previous_section.text)
+        added_sentences = [entry.latest_text for entry in changes if entry.change_type == "added"]
+        removed_sentences = [entry.latest_text for entry in changes if entry.change_type == "removed"]
+        modified_sentences = [
+            FilingSentencePair(latest=entry.latest_text, previous=entry.previous_text)
+            for entry in changes
+            if entry.change_type == "modified"
         ]
-        if added_terms:
-            summary_parts.append("Newer emphasis: " + ", ".join(added_terms[:5]) + ".")
-        if removed_terms:
-            summary_parts.append("Reduced emphasis: " + ", ".join(removed_terms[:5]) + ".")
-        summary_parts.append("Review the cited excerpts before treating this as material.")
 
         return FilingSectionComparison(
             section_name=latest_section.name,
@@ -2283,7 +2509,17 @@ class FilingService:
             word_count_delta=word_count_delta,
             added_terms=added_terms[:8],
             removed_terms=removed_terms[:8],
-            summary=" ".join(summary_parts),
+            added_sentences=added_sentences[:5],
+            removed_sentences=removed_sentences[:5],
+            modified_sentences=modified_sentences[:5],
+            summary=build_section_summary(
+                item=latest_section.item,
+                section_name=latest_section.name,
+                word_count_delta=word_count_delta,
+                added_terms=added_terms,
+                removed_terms=removed_terms,
+                sentence_change_count=len(changes),
+            ),
             citations=[
                 FilingComparisonCitation(
                     filing_label="latest",
@@ -2291,7 +2527,15 @@ class FilingService:
                     filing_date=latest.filing_date,
                     section_name=latest_section.name,
                     item=latest_section.item,
-                    excerpt=self._best_comparison_excerpt(latest_section.text, added_terms),
+                    excerpt=best_excerpt(
+                        latest_section.text,
+                        added_terms
+                        or (
+                            list(search_terms(added_sentences[0]))[:6]
+                            if added_sentences
+                            else []
+                        ),
+                    ),
                 ),
                 FilingComparisonCitation(
                     filing_label="previous",
@@ -2299,27 +2543,24 @@ class FilingService:
                     filing_date=previous.filing_date,
                     section_name=previous_section.name,
                     item=previous_section.item,
-                    excerpt=self._best_comparison_excerpt(previous_section.text, removed_terms),
+                    excerpt=best_excerpt(
+                        previous_section.text,
+                        removed_terms
+                        or (
+                            list(search_terms(removed_sentences[0]))[:6]
+                            if removed_sentences
+                            else []
+                        ),
+                    ),
                 ),
             ],
         )
 
-    def _term_frequencies(self, text: str) -> dict[str, int]:
-        frequencies: dict[str, int] = {}
-        for term in self._search_terms(text):
-            frequencies[term] = len(re.findall(r"\b" + re.escape(term) + r"\w*\b", text.lower()))
-        return frequencies
-
-    def _rank_term_delta(self, primary: dict[str, int], baseline: dict[str, int]) -> list[str]:
-        scored = [
-            (primary_count - baseline.get(term, 0), primary_count, term)
-            for term, primary_count in primary.items()
-            if primary_count > baseline.get(term, 0)
-        ]
-        scored.sort(key=lambda entry: (entry[0], entry[1], entry[2]), reverse=True)
-        return [self._display_search_term(term) for _, _, term in scored if len(term) > 3]
-
-    def _overall_change_summary(self, comparisons: list[FilingSectionComparison]) -> str:
+    def _overall_change_summary(
+        self,
+        comparisons: list[FilingSectionComparison],
+        kpi_deltas: list[FilingKpiDelta] | None = None,
+    ) -> str:
         largest = sorted(comparisons, key=lambda section: abs(section.word_count_delta), reverse=True)[:2]
         emphasis: list[str] = []
         for section in comparisons:
@@ -2332,33 +2573,14 @@ class FilingService:
         ]
         if unique_emphasis:
             parts.append("Newer emphasis centers on " + ", ".join(unique_emphasis) + ".")
+        if kpi_deltas:
+            parts.append(
+                "Numeric deltas: "
+                + "; ".join(delta.change_summary for delta in kpi_deltas[:3])
+                + "."
+            )
         parts.append("Treat this as a triage signal and confirm materiality in the cited excerpts.")
         return " ".join(parts)
-
-    def _display_search_term(self, term: str) -> str:
-        display_fixes = {
-            "decreas": "decrease",
-            "increas": "increase",
-            "pric": "price",
-            "taxe": "taxes",
-        }
-        return display_fixes.get(term, term)
-
-    def _best_comparison_excerpt(self, text: str, focus_terms: list[str]) -> str:
-        sentences = re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", text).strip())
-        if not sentences:
-            return self._excerpt(text, 700)
-
-        focus = set(focus_terms[:8])
-        if not focus:
-            return self._excerpt(sentences[0], 700)
-
-        ranked = sorted(
-            sentences,
-            key=lambda sentence: len(self._search_terms(sentence) & focus),
-            reverse=True,
-        )
-        return self._excerpt(ranked[0], 700)
 
     def _excerpt(self, text: str, max_chars: int) -> str:
         compact = re.sub(r"\s+", " ", text).strip()
@@ -2373,8 +2595,105 @@ class FilingService:
     def _question_history_path(self, ticker: str) -> Path:
         return self.data_dir / f"{ticker}_question_history.json"
 
+    def _is_demo_data_dir(self, data_dir: Path) -> bool:
+        from app.config import demo_filings_dir
+
+        try:
+            return data_dir.resolve() == demo_filings_dir().resolve()
+        except OSError:
+            return False
+
+    def _demo_filing_paths(self, ticker: str) -> list[Path]:
+        normalized = CompanyService()._normalize_ticker(ticker)
+        paths = [
+            path
+            for path in self.data_dir.glob(f"{normalized}_*.json")
+            if not path.name.endswith("_question_history.json")
+        ]
+        if not paths:
+            raise FilingIngestionError(
+                "No demo filing for "
+                + normalized
+                + ". Supported demo tickers: NVDA, AAPL, JPM."
+            )
+
+        filings: list[tuple[str, Path]] = []
+        for path in paths:
+            with path.open(encoding="utf-8") as file:
+                payload = json.load(file)
+            summary = FilingSummary.model_validate(payload["summary"])
+            filings.append((summary.filing_date, path))
+        filings.sort(key=lambda entry: entry[0], reverse=True)
+        return [path for _, path in filings]
+
+    def _load_demo_filing(self, ticker: str) -> FilingSummary:
+        paths = self._demo_filing_paths(ticker)
+        with paths[0].open(encoding="utf-8") as file:
+            payload = json.load(file)
+        filing = self._summary_from_payload(payload, paths[0])
+        if not filing.chunk_embeddings:
+            filing.chunk_embeddings = self._build_chunk_embeddings(filing.sections)
+        return filing
+
+    def _compare_demo_filings(self, ticker: str) -> FilingComparison:
+        paths = self._demo_filing_paths(ticker)
+        if len(paths) < 2:
+            normalized = CompanyService()._normalize_ticker(ticker)
+            raise FilingIngestionError(
+                "Demo period compare requires two filings for "
+                + normalized
+                + ". Demo tickers NVDA, AAPL, and JPM each include latest and prior-period fixtures."
+            )
+        latest = self._summary_from_payload(
+            json.loads(paths[0].read_text(encoding="utf-8")), paths[0]
+        )
+        previous = self._summary_from_payload(
+            json.loads(paths[1].read_text(encoding="utf-8")), paths[1]
+        )
+        if not latest.chunk_embeddings:
+            latest.chunk_embeddings = self._build_chunk_embeddings(latest.sections)
+        if not previous.chunk_embeddings:
+            previous.chunk_embeddings = self._build_chunk_embeddings(previous.sections)
+        return self.compare_filings(ticker, latest=latest, previous=previous)
+
+    def _filing_payload_path(self, filing: FilingSummary) -> Path:
+        if Path(filing.local_path).is_absolute():
+            return Path(filing.local_path)
+        return self.data_dir / Path(filing.local_path).name
+
+    def _load_stored_validated_claims(self, filing: FilingSummary) -> list[Any]:
+        from app.services.evidence_claims import EvidenceClaim
+
+        path = self._filing_payload_path(filing)
+        if not path.exists():
+            return []
+        with path.open(encoding="utf-8") as file:
+            payload = json.load(file)
+        raw = payload.get("validated_claims", [])
+        if not isinstance(raw, list):
+            return []
+        return [EvidenceClaim.model_validate(entry) for entry in raw if isinstance(entry, dict)]
+
+    def _persist_validated_claims(
+        self, filing: FilingSummary, claims: list[Any]
+    ) -> None:
+        if self.demo_mode:
+            return
+        path = self._filing_payload_path(filing)
+        if not path.exists():
+            return
+        with path.open(encoding="utf-8") as file:
+            payload = json.load(file)
+        payload["validated_claims"] = [
+            claim.model_dump() if hasattr(claim, "model_dump") else claim
+            for claim in claims
+        ]
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
     def _persist(self, summary: FilingSummary, raw_html: str) -> None:
         path = Path(summary.local_path)
+        if not path.is_absolute():
+            path = self.data_dir / path.name
         path.parent.mkdir(parents=True, exist_ok=True)
         payload: dict[str, Any] = {
             "summary": summary.model_dump(),

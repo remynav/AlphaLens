@@ -1,0 +1,28 @@
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      SEC_USER_AGENT: ${SEC_USER_AGENT:-AlphaLens demo@example.com}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ALPHALENS_LLM_SYNTHESIS: ${ALPHALENS_LLM_SYNTHESIS:-1}
+      ALPHALENS_DEMO_MODE: ${ALPHALENS_DEMO_MODE:-1}
+    volumes:
+      - alphalens-data:/app/data/filings
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      ALPHALENS_API_BASE_URL: http://backend:8000
+    depends_on:
+      - backend
+
+volumes:
+  alphalens-data:

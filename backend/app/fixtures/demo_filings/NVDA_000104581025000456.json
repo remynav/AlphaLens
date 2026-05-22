@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "ticker": "NVDA",
+    "cik": "0001045810",
+    "company_name": "NVIDIA CORP",
+    "accession_number": "0001045810-25-000456",
+    "form": "10-K",
+    "filing_date": "2025-02-26",
+    "report_date": "2025-01-26",
+    "primary_document": "nvda-20250126.htm",
+    "source_url": "https://www.sec.gov/example/nvda-20250126.htm",
+    "index_url": "https://www.sec.gov/example/nvda-prior-index",
+    "local_path": "NVDA_000104581025000456.json",
+    "sections": [
+      {
+        "name": "Risk Factors",
+        "item": "Item 1A",
+        "text": "Supply constraints may affect product availability and data center deployments. Competition and demand uncertainty may affect revenue in key markets.",
+        "word_count": 22
+      },
+      {
+        "name": "Management Discussion and Analysis",
+        "item": "Item 7",
+        "text": "Revenue increased because demand grew across gaming and professional visualization segments. Operating income improved modestly year over year.",
+        "word_count": 20
+      }
+    ],
+    "chunk_embeddings": [],
+    "ingested_at": "2026-05-18T00:00:00+00:00"
+  },
+  "raw_html": "<html><body>Demo prior filing</body></html>",
+  "validated_claims": []
+}

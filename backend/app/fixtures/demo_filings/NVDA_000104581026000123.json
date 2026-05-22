@@ -1,0 +1,56 @@
+{
+  "summary": {
+    "ticker": "NVDA",
+    "cik": "0001045810",
+    "company_name": "NVIDIA CORP",
+    "accession_number": "0001045810-26-000123",
+    "form": "10-Q",
+    "filing_date": "2026-05-01",
+    "report_date": "2026-04-30",
+    "primary_document": "nvda-20260430.htm",
+    "source_url": "https://www.sec.gov/example/nvda-20260430.htm",
+    "index_url": "https://www.sec.gov/example/nvda-index",
+    "local_path": "NVDA_000104581026000123.json",
+    "sections": [
+      {
+        "name": "Risk Factors",
+        "item": "Item 1A",
+        "text": "Export controls and geopolitical restrictions may delay customer shipments and adversely affect revenue. Supply constraints may affect product availability and data center deployments. Cybersecurity incidents could disrupt operations.",
+        "word_count": 28
+      },
+      {
+        "name": "Management Discussion and Analysis",
+        "item": "Item 7",
+        "text": "Revenue increased 30% year over year to $44.1 billion because data center demand grew across cloud and enterprise customers. Operating income improved because product margins were stronger in accelerated computing platforms.",
+        "word_count": 32
+      }
+    ],
+    "chunk_embeddings": [],
+    "ingested_at": "2026-05-19T00:00:00+00:00"
+  },
+  "raw_html": "<html><body>Demo filing</body></html>",
+  "validated_claims": [
+    {
+      "claim": "Revenue increased 30% year over year to $44.1 billion because data center demand grew",
+      "evidence_citation": 2,
+      "verbatim_span": "Revenue increased 30% year over year to $44.1 billion because data center demand grew",
+      "claim_type": "operating_driver",
+      "stance": "bull",
+      "why_it_matters": "Supports bull case if data center demand persists next quarter.",
+      "confidence": "high",
+      "falsifier": "If revenue growth decelerates below 30% next quarter, bull case weakens.",
+      "category_label": "Revenue growth"
+    },
+    {
+      "claim": "Export controls may delay customer shipments and adversely affect revenue",
+      "evidence_citation": 1,
+      "verbatim_span": "Export controls and geopolitical restrictions may delay customer shipments and adversely affect revenue",
+      "claim_type": "risk",
+      "stance": "bear",
+      "why_it_matters": "Bear case if restrictions tighten or segment disclosure shows impact.",
+      "confidence": "high",
+      "falsifier": "",
+      "category_label": "Export controls"
+    }
+  ]
+}

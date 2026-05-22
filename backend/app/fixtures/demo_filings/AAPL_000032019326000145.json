@@ -1,0 +1,33 @@
+{
+  "summary": {
+    "ticker": "AAPL",
+    "cik": "0000320193",
+    "company_name": "Apple Inc.",
+    "accession_number": "0000320193-26-000145",
+    "form": "10-Q",
+    "filing_date": "2026-02-01",
+    "report_date": "2025-12-28",
+    "primary_document": "aapl-20251228.htm",
+    "source_url": "https://www.sec.gov/example/aapl.htm",
+    "index_url": "https://www.sec.gov/example/aapl-index",
+    "local_path": "AAPL_000032019326000145.json",
+    "sections": [
+      {
+        "name": "Risk Factors",
+        "item": "Item 1A",
+        "text": "Global supply chain disruptions may delay product availability. Regulatory investigations may increase compliance costs.",
+        "word_count": 14
+      },
+      {
+        "name": "Management Discussion and Analysis",
+        "item": "Item 7",
+        "text": "Net sales increased 4% to $124.3 billion driven by Services growth and iPhone demand in emerging markets.",
+        "word_count": 16
+      }
+    ],
+    "chunk_embeddings": [],
+    "ingested_at": "2026-05-19T00:00:00+00:00"
+  },
+  "raw_html": "<html><body>Demo filing</body></html>",
+  "validated_claims": []
+}

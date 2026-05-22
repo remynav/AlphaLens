@@ -1,0 +1,38 @@
+{
+  "citations": [
+    {
+      "section_name": "Risk Factors",
+      "item": "Item 1A",
+      "chunk_index": 0,
+      "excerpt": "Export controls may delay customer shipments and adversely affect revenue.",
+      "score": 1.0
+    },
+    {
+      "section_name": "Management Discussion and Analysis",
+      "item": "Item 7",
+      "chunk_index": 0,
+      "excerpt": "Revenue increased 30% because data center demand grew across customers.",
+      "score": 1.1
+    }
+  ],
+  "claims": [
+    {
+      "claim": "Revenue increased 30% because data center demand grew",
+      "evidence_citation": 2,
+      "verbatim_span": "Revenue increased 30% because data center demand grew",
+      "claim_type": "operating_driver",
+      "stance": "bull",
+      "why_it_matters": "Track against next quarter revenue.",
+      "confidence": "high"
+    },
+    {
+      "claim": "Export controls may delay customer shipments",
+      "evidence_citation": 1,
+      "verbatim_span": "Export controls may delay customer shipments",
+      "claim_type": "risk",
+      "stance": "bear",
+      "why_it_matters": "Downside if restrictions tighten.",
+      "confidence": "high"
+    }
+  ]
+}
